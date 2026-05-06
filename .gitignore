@@ -1,0 +1,25 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Test output
+coverage/
+
+# Local test-only fixture projects (recreated by the smoke harness as needed)
+test-project/
+test-project-python/
+test-project-go/
+
+# Revvy scratch artifacts (created when running revvy against a project)
+*.revvy-backup
+/tmp/revvy-*.log

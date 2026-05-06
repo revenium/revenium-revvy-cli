@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: ['**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Lint, Type Check, Build (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      - name: Check docs/agent-guide.md is up to date
+        run: |
+          pnpm build:docs
+          if ! git diff --quiet docs/agent-guide.md; then
+            echo ""
+            echo "::error::docs/agent-guide.md is out of date with agentPrompt.ts"
+            echo ""
+            echo "To fix: run 'pnpm build:docs' and commit the updated docs/agent-guide.md"
+            echo ""
+            git diff docs/agent-guide.md
+            exit 1
+          fi
+
+      - name: Smoke test (consultation + generate)
+        run: pnpm smoke

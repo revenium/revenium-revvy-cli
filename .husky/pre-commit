@@ -1,0 +1,2 @@
+pnpm build:docs
+git add docs/agent-guide.md
