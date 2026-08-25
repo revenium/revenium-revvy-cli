@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Verify the metering key against the Revenium API before reporting setup success, so a rejected key no longer produces a false "setup complete" result
 - Refresh the agent curriculum, CI agent prompt, and generated configuration templates to match the current Revenium API
+- Report the correct version in `revvy --version` and in the startup banner, which were both stuck at `0.1.0`
 
 ## [1.0.0] - 2026-05-07
 
