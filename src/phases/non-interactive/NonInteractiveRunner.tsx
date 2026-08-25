@@ -87,8 +87,8 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
 
     async function run() {
       const targetDir = resolve(args.targetDir);
-      const log = (message: string) =>
-        setState((prev) => ({ ...prev, logs: [...prev.logs, { message }] }));
+      const log = (message: string, isError = false) =>
+        setState((prev) => ({ ...prev, logs: [...prev.logs, { message, isError }] }));
 
       try {
         // 1. Validate API key (skip for dry-run without key)
@@ -101,7 +101,11 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
           }
           if (cancelled) return;
           if (keyResult.data.meteringOnly) {
-            log("API key valid (metering-only key — org lookup skipped)");
+            if (keyResult.data.unverified) {
+              log(`Could not verify the metering key — ${keyResult.error ?? "API unreachable"}. Continuing; metering may not work.`, true);
+            } else {
+              log("API key verified against the metering API");
+            }
           } else {
             log(`API key valid (org: ${keyResult.data.orgName ?? "unknown"})`);
           }

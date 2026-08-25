@@ -69,6 +69,7 @@ def create_usage_metadata(
     trace_id: Optional[str] = None,
     agentic_job_id: Optional[str] = None,
     agentic_job_name: Optional[str] = None,
+    ticket_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Build the per-request `usage_metadata` dict from your application's
@@ -95,6 +96,7 @@ def create_usage_metadata(
         trace_id: Optional trace/session ID for correlation.
         agentic_job_id: Optional unique identifier tied to a business outcome (AI Outcomes).
         agentic_job_name: Optional human-readable job name for the agentic outcome.
+        ticket_id: Optional external ticket/issue ID for cost attribution (max 256 chars).
     """
     metadata: Dict[str, Any] = {}
 
@@ -122,6 +124,8 @@ def create_usage_metadata(
         metadata["agentic_job_id"] = agentic_job_id
     if agentic_job_name:
         metadata["agentic_job_name"] = agentic_job_name
+    if ticket_id:
+        metadata["ticket_id"] = ticket_id
 
     return metadata
 

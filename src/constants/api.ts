@@ -2,10 +2,15 @@ export const REVENIUM_API_BASE_URL = "https://api.revenium.ai";
 export const REVENIUM_API_PATH_PREFIX = "/profitstream/v2/api";
 export const REVENIUM_METERING_PATH_PREFIX = "/meter/v2";
 export const REVENIUM_DASHBOARD_URL = "https://app.revenium.ai";
-export const REVENIUM_DOCS_URL = "https://docs.revenium.ai";
+export const REVENIUM_DOCS_URL = "https://docs.revenium.io";
 
 export const REVENIUM_LLMS_TXT_URL = "https://revenium.readme.io/llms.txt";
-export const REVENIUM_OUTCOMES_DOCS_URL = "https://docs.revenium.io/outcomes-tracking.md";
+export const REVENIUM_OUTCOMES_DOCS_URL =
+  "https://docs.revenium.io/instrument-your-agents/agent-outcomes.md";
+export const REVENIUM_RATE_LIMITS_DOCS_URL =
+  "https://docs.revenium.io/integrations/rate-limits.md";
+export const REVENIUM_IDEMPOTENCY_DOCS_URL =
+  "https://docs.revenium.io/integrations/idempotency.md";
 
 export const DASHBOARD_PATHS = {
   PROVIDERS: "/connections/providers",

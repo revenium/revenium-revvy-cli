@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-08-25
+
+### Fixed
+
+- Verify the metering key against the Revenium API before reporting setup success, so a rejected key no longer produces a false "setup complete" result
+- Refresh the agent curriculum, CI agent prompt, and generated configuration templates to match the current Revenium API
+
 ## [1.0.0] - 2026-05-07
 
 ### Changed
@@ -29,5 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dry-run mode (`--dry-run`) to preview changes without writing files
 - Test metering event verification before marking setup complete
 
+[1.0.1]: https://github.com/revenium/revenium-revvy-cli/releases/tag/v1.0.1
 [1.0.0]: https://github.com/revenium/revenium-revvy-cli/releases/tag/v1.0.0
 [0.1.0]: https://github.com/revenium/revenium-revvy-cli/releases/tag/v0.1.0
