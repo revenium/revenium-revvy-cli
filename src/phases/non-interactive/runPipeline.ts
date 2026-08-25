@@ -60,6 +60,10 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
   const targetDir = resolve(args.targetDir);
   console.log("Revvy — Non-interactive mode\n");
 
+  // Set when the key looked well-formed but the API never answered, so the
+  // closing summary can avoid asserting that metering works.
+  let keyUnverified = false;
+
   // 1. Validate API key (skip for dry-run)
   if (args.apiKey) {
     log("...", "Validating API key...");
@@ -69,7 +73,14 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
       throw new Error(keyResult.error ?? "Invalid API key");
     }
     if (keyResult.data.meteringOnly) {
-      log("✓", "API key valid (metering-only key — org lookup skipped)");
+      if (keyResult.data.unverified) {
+        // The key shape is right but the API didn't answer. Say so instead of
+        // reporting a check that never completed.
+        keyUnverified = true;
+        log("⚠", `Could not verify the metering key — ${keyResult.error ?? "API unreachable"}. Continuing; metering may not work.`);
+      } else {
+        log("✓", "API key verified against the metering API");
+      }
     } else {
       log("✓", `API key valid (org: ${keyResult.data.orgName ?? "unknown"})`);
     }
@@ -94,6 +105,10 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
   // Build union of manifest-detected providers + source-import-detected providers.
   const providerAgg = buildAllProviders(depResult.providers, callSiteResult.callSites, depResult.language);
   const allProviders = providerAgg.allProviders;
+
+  // Hoisted so the closing summary can tell "wired N call sites" apart from
+  // "wired none" — they are different outcomes and must not print the same text.
+  let instrumentedFiles = 0;
 
   const scanResult: ScanResult = {
     language: depResult.language,
@@ -308,6 +323,7 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
     }
   } else {
     const instrumentResult = await instrumentCallSites(targetDir, scanResult, design);
+    instrumentedFiles = instrumentResult.filesModified;
     log("✓", `Instrumented ${instrumentResult.filesModified} files (${instrumentResult.totalChanges} changes)`);
 
     // Re-scan to capture POST-instrumentation line numbers, then write the
@@ -413,10 +429,40 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
   if (args.dryRun) {
     console.log("Dry-run preview complete. No files were written.");
   } else {
+    if (scanResult.callSites.length === 0) {
+      // Nothing to meter. Saying "metering active" here is the single most
+      // misleading thing revvy can do: an agent reads it and tells the user
+      // the job is done.
+      console.log("Setup incomplete — no AI calls found.");
+      console.log("");
+      console.log("  ✗ Nothing is being metered.");
+      console.log(`    Scanned ${scanResult.totalFiles} files and found no ${scanResult.language} AI SDK calls,`);
+      console.log("    so there was nothing to instrument.");
+      console.log("");
+      console.log("  Check that --target-dir points at the project that makes the AI calls,");
+      console.log("  and that --exclude / .revvyignore aren't filtering them out.");
+      process.exitCode = 1;
+      return;
+    }
+
     console.log("Setup complete!");
     console.log("");
-    console.log("  ✓ Basic metering active");
-    console.log("    Tokens, model, and cost are tracked automatically via middleware imports.");
+    if (instrumentedFiles > 0 && !keyUnverified) {
+      console.log("  ✓ Basic metering active");
+      console.log("    Tokens, model, and cost are tracked automatically via middleware imports.");
+    } else if (instrumentedFiles > 0) {
+      // Code is wired, but we never confirmed the key. Don't assert it works.
+      console.log("  ⚠ Instrumentation in place, but the metering key was never verified.");
+      console.log(`    Wired ${instrumentedFiles} file(s). Re-run once the API is reachable, or confirm`);
+      console.log("    the key yourself, before trusting that data is arriving.");
+    } else {
+      // Call sites exist but nothing was wired — the usual cause is a language
+      // revvy detects but has no transform for (Go today).
+      console.log("  ⚠ Metering is NOT active yet.");
+      console.log(`    Found ${scanResult.callSites.length} AI call(s) but wired 0 of them: revvy has no`);
+      console.log(`    automatic transform for ${scanResult.language}. The middleware has to be added by hand.`);
+      console.log("    See revenium-call-sites.json for every site that needs wiring.");
+    }
     console.log("");
     console.log("  ℹ Revvy intentionally adds imports + a reference comment, but does NOT modify");
     console.log("    your AI call sites — that's left to you (or your AI coding agent), because");

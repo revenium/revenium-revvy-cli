@@ -2,7 +2,7 @@
  * The Revvy agent prompt — installed into the user's project so AI coding
  * assistants (Claude Code, Cursor, etc.) know how to use the revvy CLI.
  */
-import { REVENIUM_DASHBOARD_URL, REVENIUM_API_BASE_URL, REVENIUM_API_PATH_PREFIX, REVENIUM_METERING_PATH_PREFIX, REVENIUM_OUTCOMES_DOCS_URL, REVENIUM_LLMS_TXT_URL, DASHBOARD_PATHS } from "../../../constants/api.js";
+import { REVENIUM_DASHBOARD_URL, REVENIUM_API_BASE_URL, REVENIUM_API_PATH_PREFIX, REVENIUM_METERING_PATH_PREFIX, REVENIUM_OUTCOMES_DOCS_URL, REVENIUM_RATE_LIMITS_DOCS_URL, REVENIUM_IDEMPOTENCY_DOCS_URL, REVENIUM_LLMS_TXT_URL, DASHBOARD_PATHS } from "../../../constants/api.js";
 
 export const AGENT_PROMPT = `# Revvy — Revenium Instrumentation Agent
 
@@ -328,7 +328,7 @@ The SDK fields are \`agenticJobId\` (required, max 256 chars) and \`agenticJobNa
 
 | Field | Type | Purpose |
 |---|---|---|
-| \`agenticJobType\` | string (lowercased server-side) | Categorize the Job. Common values: \`AI\`, \`AGENT\`, \`WORKFLOW\`. Surfaced as \`type\` on the Job entity. Useful for filtering "all AI Jobs" vs "all human-supervised Agent runs" in the dashboard. |
+| \`agenticJobType\` | string (normalized to lowercase server-side) | The **workflow category**, free-form — not a fixed enum. Use lowercase, hyphen-separated, specific and action-oriented names: \`loan-application-review\`, \`customer-support-chat\`, \`code-review-security\`, \`lead-qualification\`. Surfaced as \`type\` on the Job entity and it is the grouping behind the dashboard's Job Types by Value Ratio table, so generic values (\`ai\`, \`agent\`, \`workflow\`, \`review\`) collapse everything into one bucket and make that analysis useless. Be consistent across the codebase. |
 | \`agenticJobVersion\` | string | Version of your agent/workflow code (e.g. \`"1.2.3"\`, \`"v2-beta"\`). Lets you A/B compare cost-per-outcome across versions. |
 | \`environment\` | string | Runtime environment (\`"production"\`, \`"staging"\`, \`"sandbox"\`). On the Anthropic Node SDK, currently only settable via env var \`REVENIUM_ENVIRONMENT\` — see the per-SDK matrix. |
 
@@ -461,9 +461,20 @@ Random UUIDs or names like \`job-1\` aren't useful — they don't connect back t
 - \`DEFLECTED\` — successfully handled without human intervention (cost savings)
 - \`UNSUCCESSFUL\` — did not achieve the goal and wasn't escalated
 - \`CUSTOM\` — organization-defined
-- \`PENDING\` — no outcome reported yet (default)
+
+There is no "PENDING" outcome type — a Job with no outcome yet comes back with \`hasOutcome: false\` and \`outcomeType: null\`.
 
 Each outcome can carry a monetary value, which is what unlocks ROI analysis ("we spent $X in AI + tool + human costs to deflect $Y of support cost"). See ${REVENIUM_OUTCOMES_DOCS_URL} for the outcome-reporting API.
+
+**Report the outcome deliberately, as its own step.** Metering a call and reporting a Job's outcome are two different decisions: instrumenting the AI calls gets you cost, reporting the outcome gets you ROI. A Job that never reports an outcome shows up on the ROI dashboard as pure cost with nothing on the other side of the ledger. Decide the terminal action of the workflow, map it onto an outcome type, and report it there — and if you get the mapping wrong, it is correctable (see "Correcting an outcome" below).
+
+**\`executionStatus\` and \`outcomeType\` are independent dimensions.** \`executionStatus\` says whether the technical work completed (\`SUCCESS\` / \`FAILED\` / \`CANCELLED\`); \`outcomeType\` says what the Job produced in business terms. Every combination is legal and meaningful: \`SUCCESS\` + \`CONVERTED\` (ran clean, delivered), \`SUCCESS\` + \`UNSUCCESSFUL\` (ran clean, business goal missed), \`FAILED\` + \`ESCALATED\` (broke, a human picked it up). Conflating the two is how a team concludes an agent is working when it isn't delivering.
+
+**Report an outcome for every Job — including the ones that failed.** Skipping the failures inflates your success rate, your autonomy rate and your cost-per-successful-outcome all at once:
+
+- **Failed** — post \`executionStatus: "FAILED"\` and omit \`outcomeType\` and \`outcomeValue\`. Always send \`outcomeReason\`.
+- **Escalated to a human** — post \`executionStatus: "SUCCESS"\`, \`outcomeType: "ESCALATED"\`, and the **full** business value. Do not discount the value because a human finished the work: the human's time is metered separately as a tool cost, and that is the only way the ROI arithmetic comes out right.
+- **Ran clean but delivered nothing** — post \`executionStatus: "SUCCESS"\` with \`outcomeType: "UNSUCCESSFUL"\`.
 
 **How to send a metering transaction** (this is what the SDK middleware does for you, but useful when testing manually with curl):
 
@@ -471,21 +482,23 @@ Each outcome can carry a monetary value, which is what unlocks ROI analysis ("we
 curl -X POST '${REVENIUM_API_BASE_URL}${REVENIUM_METERING_PATH_PREFIX}/ai/completions' \\
   -H "x-api-key: $REVENIUM_METERING_API_KEY" \\
   -H 'Content-Type: application/json' \\
+  -H "Idempotency-Key: $(uuidgen)" \\
   -d '{
-    "transactionId":       "<unique-tx-id>",       // REQUIRED — your generated UUID/ULID
-    "model":               "claude-3-5-sonnet-20241022",
-    "provider":            "anthropic",
-    "inputTokenCount":     100,
-    "outputTokenCount":    50,
+    "transactionId":       "<unique-tx-id>",       // optional per the spec (auto-generated), but always set it — dedup + correlation depend on it
+    "model":               "claude-3-5-sonnet-20241022", // REQUIRED
+    "provider":            "anthropic",            // REQUIRED
+    "inputTokenCount":     100,                    // REQUIRED
+    "outputTokenCount":    50,                     // REQUIRED
+    "totalTokenCount":     150,                    // REQUIRED — inputTokenCount + outputTokenCount
     "requestTime":         "2026-05-01T19:00:00Z", // REQUIRED — ISO-8601 with timezone
     "completionStartTime": "2026-05-01T19:00:00.500Z", // REQUIRED
     "responseTime":        "2026-05-01T19:00:01Z", // REQUIRED — when the AI call finished
     "requestDuration":     1234,                   // REQUIRED — milliseconds
-    "stopReason":          "END",                  // REQUIRED — END | END_SEQUENCE | TIMEOUT | ERROR | TOKEN_LIMIT_REACHED | TRUNCATED
+    "stopReason":          "END",                  // REQUIRED — END | END_SEQUENCE | TIMEOUT | TOKEN_LIMIT | COST_LIMIT | COMPLETION_LIMIT | ERROR | CANCELLED | CONTENT_FILTER | TOOL_CALL
     "organizationName":    "<your-customer-id>",
     "agenticJobId":        "<job-id>",
     "agenticJobName":      "<human-readable name>",
-    "agenticJobType":      "AI",                   // optional — AI | AGENT | WORKFLOW (lowercased server-side)
+    "agenticJobType":      "loan-application-review", // optional — free-form workflow category, lowercase-hyphenated (see the Jobs section)
     "agenticJobVersion":   "1.0.0",                // optional — version of your agent code
     "environment":         "production",           // optional — production | staging | sandbox
     "taskType":            "<workflow-category>",
@@ -493,13 +506,50 @@ curl -X POST '${REVENIUM_API_BASE_URL}${REVENIUM_METERING_PATH_PREFIX}/ai/comple
   }'
 \`\`\`
 
-> The middleware sends all of these automatically. This curl shape is for **manual testing only** (e.g. when probing the API directly without booting your app). If you skip any of the REQUIRED fields, the metering POST returns \`400\` and the Job never materializes — which then makes outcome reporting return \`404\`.
+> The middleware sends all of these automatically. This curl shape is for **manual testing only** (e.g. when probing the API directly without booting your app). A successful metering POST answers **\`201\`**, not \`200\`. If you skip any of the REQUIRED fields it returns \`400\` and the Job never materializes — which then makes outcome reporting return \`404\`. The \`Idempotency-Key\` header is optional but makes a retry safe; see "Retry safety for metering" below.
 
 **How to report an outcome** (after the Job's terminal action):
 
 > **Important:** The outcome API requires a **write key** (\`rev_sk_*\`), not the metering key (\`rev_mk_*\`) used for sending transactions. Add \`REVENIUM_API_KEY=<your-write-key>\` to \`.env\` alongside \`REVENIUM_METERING_API_KEY\`. Get the write key at ${REVENIUM_DASHBOARD_URL}${DASHBOARD_PATHS.SDK_SETUP}.
+>
+> Revenium has three key scopes and the prefix tells you which you were handed: \`rev_mk_*\` metering-only (ingestion), \`rev_sk_*\` write / full access (outcome reporting, provisioning), \`rev_rk_*\` read-only (dashboards and reports). A \`rev_rk_*\` key will read \`/users/me\` happily and then fail on the first write, so check the prefix rather than inferring the scope from a successful auth check. revvy verifies a \`rev_mk_*\` key by POSTing an empty body to the ingestion endpoint — a \`400\` proves the key authenticates without metering anything, while \`401\`/\`403\` means the key is bad. Use the narrowest scope that does the job.
 
-Option A — **via API** (for programmatic reporting, requires write key):
+Option A — **via the SDK** (preferred whenever the middleware is already installed):
+
+Both middlewares ship a first-class jobs API, so there is no reason to hand-roll the HTTP call. Python (\`revenium-python-sdk >= 0.4.0\`):
+
+\`\`\`python
+from revenium_middleware import JobContext, get_outcome_history
+
+with JobContext(job_id="loan-app-12345", type="loan-application-review") as job:
+    ...  # your AI calls — they inherit agenticJobId automatically
+    job.report_outcome(execution_status="SUCCESS", outcome_type="CONVERTED", outcome_value=500.0)
+
+# Later, possibly from another process:
+job = JobContext.attach("loan-app-12345")
+job.amend_outcome(reason="Customer expanded to the annual plan", outcome_value=750.0)
+job.close()
+history = get_outcome_history("loan-app-12345")   # ordered revisions, 1 = initial report
+\`\`\`
+
+\`JobContext\` is worth using for one behaviour alone: **if an unhandled exception escapes the block and no outcome was reported yet, it auto-reports \`execution_status="FAILED"\`** (error message and class in metadata) and re-raises. That is the single most common reason a Job ends up with no outcome at all. Team resolution is \`team_id=\` > \`REVENIUM_TEAM_ID\` > derived from the API key. Catch \`OutcomeReportingError\` to cover the whole exception family.
+
+Node (\`@revenium/middleware >= 1.1.9\`):
+
+\`\`\`ts
+import { JobContext, reportJobOutcome, amendJobOutcome, getJobOutcomeHistory } from "@revenium/middleware";
+
+const job = new JobContext({ jobId: "loan-app-12345", type: "loan-application-review" });
+await job.run(async () => { /* your AI calls inherit the job fields */ });
+await job.reportOutcome({ executionStatus: "SUCCESS", outcomeType: "CONVERTED", outcomeValue: 500 });
+
+await amendJobOutcome("loan-app-12345", { reason: "Expanded to annual plan", outcomeValue: 750 });
+const history = await getJobOutcomeHistory("loan-app-12345");
+\`\`\`
+
+> ⚠ Two fields the API accepts are **missing from the Node typed surface** as of \`@revenium/middleware@1.1.10\`: \`outcomeType: "UNSUCCESSFUL"\` is absent from the \`OutcomeType\` union, and \`outcomeReason\` is absent from \`JobOutcome\` altogether. If you need either from Node today, use the direct API call below rather than fighting the types.
+
+Option B — **via the API directly** (no SDK installed, or a language with no middleware; requires the write key):
 
 The path parameter is the developer-set \`agenticJobId\` directly — **no lookup step needed.** POST the outcome:
 
@@ -513,31 +563,98 @@ Body:
     "executionStatus": "SUCCESS",     // REQUIRED — SUCCESS | FAILED | CANCELLED
     "outcomeType":     "CONVERTED",   // optional — CONVERTED | ESCALATED | DEFLECTED | UNSUCCESSFUL | CUSTOM
     "outcomeValue":    42.00,         // optional — monetary value (NOT "monetaryValue")
-    "outcomeCurrency": "USD",         // optional, defaults to USD
-    "metadata":        { },           // optional, free-form
-    "reportedBy":      "system"       // optional
+    "outcomeCurrency": "USD",         // optional, defaults to USD — USD | EUR | CAD | GBP | JPY | CNY | MXN | COP | ARS | ZMW | AUD | ZWG
+    "outcomeReason":   "",            // optional — why the job FAILED or was CANCELLED (see notes below)
+    "metadata":        "{}",          // optional, free-form — a JSON *string*, not a JSON object
+    "reportedBy":      "system"       // optional — auto-set from the key if omitted
   }
 \`\`\`
 
 **Important field notes:**
 - \`executionStatus\` is **required**. Calls without it return \`400 "Invalid JSON format"\`.
 - The monetary value field is \`outcomeValue\` — **not** \`monetaryValue\`.
-- \`teamId\` in the query string must be the **hashed** team identifier (not the raw integer). Get it from \`GET ${REVENIUM_API_BASE_URL}${REVENIUM_API_PATH_PREFIX}/users/me\` (using your write key) — the response includes \`teams[0].id\` (hashed) and \`tenant.id\`. Use \`teams[0].id\` here. The same form is used in your dashboard URLs.
+- \`outcomeReason\` explains **why the job itself** failed or was cancelled ("customer abandoned checkout", "upstream API returned 503"). Plain text, max 2048 chars. **Always send it with \`FAILED\` or \`CANCELLED\`** — it is the field the Jobs UI reads: the All Jobs table flags the status with an alert icon that reveals the reason on hover (plus an opt-in **Reason** column), and the job page shows it in full. A failure reported without it renders as a bare red badge nobody can act on. Do not encode the reason inside \`metadata\` instead — Revenium does not guess at keys in free-form JSON, so a reason buried there can never be displayed, filtered or compared. It is also distinct from the \`reason\` on an amendment, which explains why the *record* is being changed.
+- \`metadata\` is a JSON-encoded **string**, not a nested object — send \`"{\\"tier\\":\\"gold\\"}"\`, not \`{"tier":"gold"}\`.
+- \`teamId\` in the query string must be the **hashed** team identifier (not the raw integer). Get it from \`GET ${REVENIUM_API_BASE_URL}${REVENIUM_API_PATH_PREFIX}/users/me\` (using your write key) — the response carries \`teams[]\` (each with a hashed \`id\`), \`defaultTeamId\`, and \`tenant.id\`. Use the team matching \`defaultTeamId\`; \`teams\` has no documented ordering, so \`teams[0]\` is only a fallback. The same hashed form appears in your dashboard URLs.
 
-> ⚠ **CRITICAL — Field-name typos burn the Job's only outcome submission.** If you POST with \`monetaryValue\` instead of \`outcomeValue\`, the call returns \`200\` BUT the Job's outcome is permanently recorded with \`outcomeValue: null\`. Outcomes are **immutable** — you cannot correct it with a follow-up POST (you'll get a 409). **There are no second chances.** Always validate field names against the example payload above before POSTing. The same trap applies to any other field-name typo: the call succeeds, the wrong shape is recorded, and the Job is locked.
+> ⚠ **CRITICAL — a field-name typo fails silently, it does not fail loudly.** If you POST with \`monetaryValue\` instead of \`outcomeValue\`, the call returns \`200\` and the Job's outcome is recorded with \`outcomeValue: null\`. Unknown fields are ignored, so nothing in the response tells you the value was dropped — the Job just sits on the ROI dashboard with no value against its cost. Always validate field names against the example payload above before POSTing. The damage **is** reversible (see "Correcting an outcome" below), but only once someone notices it.
 
 **Response handling:**
-- \`200\` — outcome recorded with whatever fields you sent. **If you sent the wrong field names, the wrong values are now permanent.** Verify field names BEFORE you POST.
-- \`404\` — Job not yet ingested (the metering POST is async; retry with backoff for ~10s).
-- \`409\` — outcome already reported. Treat as success **only if you're confident the prior submission was correct**. If a previous run sent malformed fields, the Job is locked and you'll need a different \`agenticJobId\` going forward.
+- \`200\` — outcome recorded with whatever fields you sent. Verify the fields you meant to set actually came back on the response; a typo is recorded silently.
+- \`404\` — Job not yet ingested. Metering ingestion creates the Job record asynchronously, so the outcome lookup can run before the Job exists. Retry with **exponential backoff, honouring \`Retry-After\`** — the SDKs budget up to 10 attempts starting at 2s and backing off to 90s, sized to absorb a rate-limit penalty. Do not retry in a tight loop: sustained 4xx trips the error-pattern limiter (see "Rate limits" below). If you are calling through the SDK, it already does this — do not wrap it in a second retry loop.
+- \`429\` — rate limited. Wait at least \`Retry-After\` seconds. See "Rate limits" below.
+- \`409\` — an outcome is **already** reported for this Job. This is not a dead end: \`PATCH\` the outcome to correct it (below), or treat the 409 as success if you're confident the prior submission was right.
 
-Option B — **via Dashboard UI** (for manual reporting or testing):
+**Correcting an outcome** (outcomes are amendable — reporting one is not a one-shot call):
+
+A wrong or incomplete outcome — the wrong status, a value dropped by a field-name typo, a missing \`outcomeReason\` — is corrected in place with \`PATCH\`. The \`agenticJobId\` stays the same; you never need to abandon a Job and start a new one.
+
+\`\`\`
+PATCH ${REVENIUM_API_BASE_URL}${REVENIUM_API_PATH_PREFIX}/jobs/{agenticJobId}/outcome?teamId={hashedTeamId}
+Headers:
+  x-api-key: <REVENIUM_API_KEY>      # the rev_sk_* write key
+  Content-Type: application/json
+Body:
+  {
+    "reason":          "value was dropped by a monetaryValue typo on the first report", // REQUIRED
+    "executionStatus": "SUCCESS",     // optional — omit to leave unchanged
+    "outcomeType":     "CONVERTED",   // optional — omit to leave unchanged
+    "outcomeValue":    42.00,         // optional — omit to leave unchanged
+    "outcomeCurrency": "USD",         // optional — omit to leave unchanged
+    "outcomeReason":   "",            // optional — omit to keep the current value, "" to clear it
+    "metadata":        "{}"           // optional — omit to leave unchanged
+  }
+\`\`\`
+
+- \`reason\` is **required** and is the audit-trail entry for the revision itself ("why is this record changing?"), not the job's failure reason. Missing or blank \`reason\` returns \`422\`.
+- \`422\` also means **no outcome has been reported yet** — POST first, then PATCH.
+- \`409\` on the PATCH means a concurrent update was detected — refetch the Job and retry.
+
+**Reading the amendment trail:**
+
+\`\`\`
+GET ${REVENIUM_API_BASE_URL}${REVENIUM_API_PATH_PREFIX}/jobs/{agenticJobId}/outcome/history?teamId={hashedTeamId}
+\`\`\`
+
+Returns the revisions in order: \`sequence: 1\` is the initial report, \`2\`+ are amendments. Each revision carries the \`executionStatus\` / \`outcomeType\` / \`outcomeValue\` / \`outcomeReason\` as of that point, plus \`reportedBy\`, \`reportedAt\`, and the revision's \`reason\` (null on \`sequence: 1\`). The Job itself also reports \`outcomeUpdateCount\`, \`outcomeUpdatedAt\` and \`outcomeUpdatedBy\`, so you can tell an amended outcome from an original one without fetching the history.
+
+Option C — **via Dashboard UI** (for manual reporting or testing):
 1. Go to ${REVENIUM_DASHBOARD_URL}${DASHBOARD_PATHS.ROI_DASHBOARD}
 2. Click **All Jobs** to see the list of tracked Jobs
 3. Select a Job from the list
-4. Click the **Report Outcome** button and fill in the outcome type + monetary value
+4. Click the **Report Outcome** button and fill in the outcome type + monetary value. On a Job that already has an outcome the button reads **Correct Outcome** instead: it asks for the mandatory change \`reason\`, and once saved the job page grows an **Outcome History** trail showing every revision, who made it and why.
 
 **Reference**: For the full outcome-reporting payload shape, see ${REVENIUM_OUTCOMES_DOCS_URL}. For the machine-readable API surface (useful for constructing requests programmatically), fetch ${REVENIUM_LLMS_TXT_URL}.
+
+### Rate limits and retry behaviour
+
+Every authenticated request maps to one of three buckets, and the budgets are very different — which matters here because **metering and outcome reporting are in different buckets**:
+
+| Bucket | Paths | Limit |
+|---|---|---|
+| \`metering\` | \`${REVENIUM_METERING_PATH_PREFIX}/**\` — the AI/tool/event ingestion calls | 1,000 req/sec |
+| \`platform\` | \`${REVENIUM_API_PATH_PREFIX}/**\` — Jobs, outcomes, \`/users/me\`, everything else | 50 req/sec |
+| \`analytics\` | metrics, traces, chart and cost-attribution reads | 100 req/sec |
+
+Limits are **per account**, not per key, so every key in the account shares the budget. Four headers come back on every authenticated response regardless of status: \`X-RateLimit-Limit\`, \`X-RateLimit-Remaining\`, \`X-RateLimit-Reset\` (unix seconds) and \`X-RateLimit-Bucket\`. Throttle on \`Remaining\` before you hit zero rather than waiting for the \`429\`.
+
+A \`429\` adds \`Retry-After\` (integer seconds, always present) and \`X-RateLimit-Limited-Reason\`, which is the field that tells you what to actually do:
+
+- \`bucket-rate\` — you are sending too fast. Honour \`Retry-After\`, then back off exponentially **with jitter** so concurrent workers in the same account don't retry in lockstep.
+- \`error-pattern\` — you are sending *broken* requests. Sustained 4xx over a short window triggers a temporary block whose cooldown **doubles with each violation, up to one hour**. Retrying harder makes it worse; fix the request (auth, missing required fields, wrong Job ID) and the cooldown clears itself.
+
+Full reference: ${REVENIUM_RATE_LIMITS_DOCS_URL}. This is the reason the outcome-\`404\` retry above must be a backoff and not a loop: a tight retry on a Job that hasn't materialized yet is exactly the sustained-4xx pattern the limiter is built to stop, and the penalty then lands on your metering traffic too.
+
+### Retry safety for metering (\`Idempotency-Key\`)
+
+Every REST metering POST accepts a Stripe-style \`Idempotency-Key\` header (1–255 printable-ASCII chars, a client-generated UUID v4 per logical request). Revenium caches the status and body for **24 hours** per account + key and replays it on any retry with the same key, so an ambiguous timeout no longer forces a choice between losing usage and double-counting it. Rules that bite in practice:
+
+- The fingerprint is \`(method, path, body)\`. If your retry rebuilds the payload with a fresh timestamp or a new \`transactionId\`, you get \`409 idempotency_key_mismatch\` — build the body **once** and resend the same bytes.
+- A concurrent retry while the first call is still in flight returns \`409 idempotency_key_in_progress\` with \`Retry-After: 1\`.
+- A malformed key returns \`400 invalid_idempotency_key\`.
+- Persist the key alongside your retry state; a retry from another process or after a restart needs the original key to benefit at all.
+
+The header is opt-in and requests without it behave exactly as before. OTLP endpoints are not covered. Full reference: ${REVENIUM_IDEMPOTENCY_DOCS_URL}.
 
 ### When to skip these fields
 
@@ -731,6 +848,10 @@ When running \`npx @revenium/revvy\` without \`--non-interactive\`, the wizard g
 | Vertex AI | \`import "@revenium/middleware/google/vertex"\` | Auto-patches — add \`usageMetadata\` in \`.generateContent()\` |
 | Perplexity | \`import "@revenium/middleware/perplexity"\` | Auto-patches OpenAI client for Perplexity models |
 
+**Detected but not auto-instrumented.** revvy's detection is deliberately wider than its transforms: it also flags **LangChain** (\`langchain\`, \`langchain-openai\`, \`langchain-anthropic\`, \`@langchain/*\`), **fal.ai** (\`fal-client\`, \`@fal-ai/client\`) and **Go** provider SDKs, none of which have an automatic transform. Those show up as \`Skipped [provider]: no transform\` — expected output, not a failure. Wire them by hand: Python and Node use the tables above; Go has its own middleware packages (\`github.com/revenium/revenium-middleware-{openai,anthropic,google,fal,runway}-go\`) which revvy detects but cannot install or wire for you.
+
+**Python extras.** Install only the providers in use — the extra names are \`openai\`, \`anthropic\`, \`google-genai\`, \`google-vertex\`, \`litellm\`, \`litellm-proxy\`, \`ollama\`, \`perplexity-openai\`, \`fal\`, \`langchain\`, and they combine: \`pip install "revenium-python-sdk[openai,anthropic,langchain]"\`.
+
 ---
 
 ## Revenium Data Model
@@ -748,15 +869,19 @@ The ingestion API accepts a broad set of fields, but **per-SDK + per-provider su
 | \`traceId\` | **YOU set, per workflow run** | Correlates multiple AI calls in one end-to-end workflow — see "AI Outcomes Strategy". |
 | \`agenticJobId\` | **YOU set, per Job** | Identifies the Job (the unit of work tied to a business outcome — customer-facing name is **AI Outcomes**). |
 | \`agenticJobName\` | YOU set, per Job | Human-readable display name for the Job. |
+| \`ticketId\` | **YOU set, per call** | External ticket or issue ID this work belongs to (\`JIRA-123\`, \`LINEAR-456\`) — attributes the call's cost to a ticket. Max 256 chars. Requires \`@revenium/middleware >= 1.1.9\` or \`revenium-python-sdk >= 0.6.0\`; env fallback \`REVENIUM_TICKET_ID\`. |
 | \`model\` | Auto-captured | gpt-4o, claude-3, gemini, etc. |
 | \`inputTokenCount\` | Auto-captured | Input tokens |
 | \`outputTokenCount\` | Auto-captured | Output tokens |
+| \`totalTokenCount\` | Auto-captured | Total tokens — REQUIRED by the ingestion API |
 | \`totalCost\` | Auto-captured | Estimated cost |
 | \`requestDuration\` | Auto-captured | Latency in ms |
 
+> **\`organizationName\` and \`productName\` are normally auto-created** on first sight, which is why instrumentation "just works" against a fresh account. An account can opt into **strict ingestion mode**, and then it doesn't: a payload naming an organization, product, subscriber, credential or subscription that doesn't already exist is **not ingested** — it is held as an ingestion failure with a named reason (\`Product not found\`, \`Organization name/ID mismatch\`, …), reviewable and resubmittable for 30 days before it is deleted. If metering returns 2xx and nothing shows up in the dashboard, check that list before debugging the code: the payload is fine, the referenced object just doesn't exist yet.
+
 ### Per-SDK + per-provider extras (verify against your installed SDK version)
 
-The fields below are accepted by the ingestion API but are NOT uniformly exposed across SDK + provider combinations as of \`@revenium/middleware@1.1.x\` and \`revenium-python-sdk@0.1.x\`. **Before promising any of these to a developer**, check the SDK version they have installed and the typed \`UsageMetadata\` interface that ships with it.
+The fields below are accepted by the ingestion API but are NOT uniformly exposed across SDK + provider combinations. Verified against \`@revenium/middleware@1.1.10\` (typed \`UsageMetadata\`) and \`revenium-python-sdk@0.6.0\`. **Before promising any of these to a developer**, check the SDK version they have installed and the typed \`UsageMetadata\` interface that ships with it — a field the installed version doesn't know is silently dropped, and on the Node Anthropic path an unknown \`usageMetadata\` key can fail the provider call outright.
 
 Legend: ✅ per-call settable · ⚠ env-var only (process-wide, not per-call — fine for single-tenant batch jobs, surprising in serverless with concurrent requests) · ❌ not yet supported
 
@@ -768,10 +893,11 @@ Legend: ✅ per-call settable · ⚠ env-var only (process-wide, not per-call �
 | \`parentTransactionId\` | ⚠ env-var | ✅ | ✅ | ✅ |
 | \`transactionName\` | ⚠ env-var | ✅ | ✅ | ✅ |
 | \`traceType\` / \`traceName\` | ⚠ env-var | ✅ | ✅ | ✅ |
-| \`errorCode\` | ❌ | ❌ | ❌ | ❌ |
-| \`billingSkipped\` / \`skipReason\` | ❌ | ❌ | ❌ | ❌ |
+| \`errorCode\` | ❌ | ❌ | ❌ | ✅ (\`>= 0.6.0\`) |
+| \`billingSkipped\` / \`skipReason\` | ❌ | ❌ | ❌ | ✅ (\`>= 0.6.0\`) |
 | \`pricingTier\` (STANDARD / BATCH) | ❌ | ❌ | ❌ | ❌ |
 | \`subscriptionTier\` | ❌ | ❌ | ❌ | ❌ |
+| \`skillName\` and the five other \`skill*\` fields (see below) | ❌ | ❌ | ❌ | ✅ (\`>= 0.6.0\`) |
 
 **How to use this table when advising a developer:**
 
@@ -779,7 +905,20 @@ Legend: ✅ per-call settable · ⚠ env-var only (process-wide, not per-call �
 2. If the field is ⚠ env-var-only, surface the tradeoff explicitly: "*This works today, but only at process granularity — every concurrent request in this Lambda will get the same value. If that's fine for your use case, set \`REVENIUM_<FIELD>=...\` in your env. If you need per-call settability, this isn't currently supported in the Node Anthropic SDK.*"
 3. If the field is ❌, don't promise it. The API accepts it; today's SDKs don't expose it.
 
-This matrix shifts as Phase 1 / Phase 2 SDK upgrades land. If the developer's SDK version is \`>= 1.2.0\` for Node middleware or \`>= 0.2.0\` for the Python SDK, re-check the typed interface — many of the ⚠ rows likely become ✅.
+This matrix shifts as SDK releases land — the Python SDK moved from \`0.1.x\` to \`0.6.0\` while this guide sat unmaintained, which is what turned the \`errorCode\` / \`billingSkipped\` / \`skill*\` rows from ❌ into ✅. If the developer is on a newer version than the ones named above, re-check the typed interface rather than trusting this table.
+
+### Skill attribution (Python SDK only, \`>= 0.6.0\`)
+
+Six fields attribute a call to the **named skill** that produced it, for agents that dispatch discrete skills or workflows rather than making undifferentiated model calls. Skip the whole cluster if the app has no such concept — that is the common case, and a half-filled skill record is worse than none. \`@revenium/middleware\` does not expose these per-call as of \`1.1.10\`; the Python SDK accepts each one either in \`usage_metadata\` (snake_case or camelCase) or via the matching \`REVENIUM_SKILL_*\` env var.
+
+| Field | Accepted values | Notes |
+|---|---|---|
+| \`skill_name\` | free-form, max 256 | The name of the skill that drove the call (e.g. \`code-review\`). Resolved server-side into a shared skill catalog — it is not a generic task label, use \`taskType\` for that. |
+| \`skill_source\` | \`bundled\` \\| \`projectSettings\` \\| \`userSettings\` \\| \`plugin\` | **Closed vocabulary, case-sensitive.** The four values map to the Origin badges Vendor / Individual / Project / Marketplace; anything unrecognized (or missing) falls into **Other**, which tells the customer nothing. Send one of the four exactly, or omit the field. |
+| \`skill_kind\` | \`workflow\` | Only meaningful for workflow skills; omit otherwise. |
+| \`skill_plugin_name\` | free-form, max 256 | The plugin providing the skill. Only set when \`skill_source\` is \`plugin\`. |
+| \`skill_marketplace_name\` | free-form, max 256 | Where the plugin was installed from. |
+| \`skill_invocation_trigger\` | max **32** chars; commonly \`user-slash\`, \`claude-proactive\`, \`nested-skill\` | What triggered the invocation. Separates user-invoked from proactive usage. The 32-char cap is much tighter than the others — a longer value is truncated. |
 
 ---
 
@@ -836,9 +975,13 @@ npx @revenium/revvy check
 | Anthropic returns \`400: "usageMetadata: Extra inputs are not permitted"\` | App was launched under \`tsx\` — middleware silently failed to patch | Run via the production entry point (Vite/Next.js dev server, compiled \`tsc\`+\`node\`, or \`vitest\`). \`tsx\` is not supported. |
 | 403 on outcome POST | Using metering key (\`rev_mk_*\`) instead of write key | Outcome API requires \`rev_sk_*\` write key — add \`REVENIUM_API_KEY\` to \`.env\` |
 | \`400 Invalid JSON format\` on outcome POST | Missing required \`executionStatus\` field | Add \`executionStatus: "SUCCESS" \\| "FAILED" \\| "CANCELLED"\` to the body |
-| \`outcomeValue\` not appearing in dashboard | Used \`monetaryValue\` instead | Field is \`outcomeValue\`. \`monetaryValue\` returns 200 but is **permanently locked in as null** — outcomes are immutable, you can't retry with the right field. Use a different \`agenticJobId\` going forward. |
-| \`404\` on outcome POST | Job not yet ingested (async metering pipeline) | Retry with exponential backoff for ~10s — the Job materializes shortly after the first transaction |
-| \`409\` on outcome POST | Outcome already reported (outcomes are immutable) | Treat as success — replays are no-ops by design |
+| \`outcomeValue\` not appearing in dashboard | Used \`monetaryValue\` instead | Field is \`outcomeValue\`. \`monetaryValue\` returns 200 and records \`outcomeValue: null\`. Correct it in place: \`PATCH .../jobs/{agenticJobId}/outcome\` with the right \`outcomeValue\` plus a \`reason\`. Keep the same \`agenticJobId\`. |
+| \`404\` on outcome POST | Job not yet ingested (async metering pipeline) | Retry with exponential backoff honouring \`Retry-After\` (the SDKs allow up to 10 attempts, 2s → 90s). Never in a tight loop — repeated 404s trip the error-pattern limiter. |
+| \`429\` on any call | Bucket budget exhausted, or the error-pattern limiter fired | Wait \`Retry-After\` seconds, then back off with jitter. Check \`X-RateLimit-Limited-Reason\`: \`bucket-rate\` means slow down, \`error-pattern\` means fix the request shape. |
+| Metering returns 2xx but nothing appears in the dashboard | The account may have **strict ingestion mode** on | With strict ingestion on, a payload naming an unknown organization/product/subscriber is held as an ingestion failure instead of auto-creating it. Check the account's ingestion-failures list, create the missing object (or fix the name), and resubmit. Held records are dropped after 30 days. |
+| \`409\` on outcome POST | An outcome is already reported for this Job | Not a dead end. If the first report was right, treat as success. If it was wrong, \`PATCH .../jobs/{agenticJobId}/outcome\` (requires \`reason\`); \`GET .../outcome/history\` shows what was recorded. |
+| \`422\` on outcome PATCH | No outcome reported yet, or \`reason\` was blank | POST the outcome first — PATCH only amends an existing one. Always send a non-blank \`reason\`. |
+| \`409\` on outcome PATCH | Concurrent update detected | Refetch the Job (\`GET .../jobs/{agenticJobId}\`) and retry the amendment. |
 
 ---
 
@@ -846,8 +989,9 @@ npx @revenium/revvy check
 
 | Command | Code | Meaning |
 |---------|------|---------|
-| \`revvy --non-interactive\` | 0 | Instrumentation complete (or dry-run complete) |
-| \`revvy --non-interactive\` | 1 | Fatal error (auth failure, missing API key, no project found, no AI SDKs detected) |
+| \`revvy --non-interactive\` | 0 | At least one AI call site was found. **Read the closing summary** — \`0\` also covers the case where call sites were found but revvy has no transform for the language, so nothing was wired and metering is NOT active yet. |
+| \`revvy --non-interactive\` | 1 | Nothing was set up: auth failure, missing API key, no project found, or no AI SDK calls detected |
+| \`revvy --non-interactive --dry-run\` | 0 | Preview complete, nothing written |
 | \`revvy check\` | 0 | All AI calls are properly wrapped |
 | \`revvy check\` | 1 | Unwrapped calls or missing middleware detected |
 | \`revvy check --warn-only\` | 0 | Always 0 — findings (if any) are printed but do not fail CI |

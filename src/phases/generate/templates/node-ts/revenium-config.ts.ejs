@@ -119,6 +119,12 @@ export function createUsageMetadata(context: {
 <%_ } -%>
   /** Trace/session ID for correlating multiple calls. */
   traceId?: string;
+  /** Job ID tying this call to a business outcome (AI Outcomes). */
+  agenticJobId?: string;
+  /** Human-readable Job name. */
+  agenticJobName?: string;
+  /** External ticket/issue ID for cost attribution (max 256 chars). */
+  ticketId?: string;
 }): UsageMetadata {
   return {
 <%_ if (isApiKey) { -%>
@@ -137,6 +143,9 @@ export function createUsageMetadata(context: {
 <%_ } -%>
     taskType: context.taskType,
     traceId: context.traceId,
+    agenticJobId: context.agenticJobId,
+    agenticJobName: context.agenticJobName,
+    ticketId: context.ticketId,
   };
 }
 
@@ -158,6 +167,9 @@ export const agentMetadata = {
 <%_ } -%>
     taskType?: string;
     traceId?: string;
+    agenticJobId?: string;
+    agenticJobName?: string;
+    ticketId?: string;
   }) =>
     createUsageMetadata({ ...context, agent: "<%- agent.name %>" }),
 <%_ } -%>
