@@ -8,7 +8,7 @@
 import type { TransformContext, TransformResult } from "./base-node-transform.js";
 import { hasImport, buildNodeCommentBlock, insertNodeBlock } from "./base-node-transform.js";
 
-const REVENIUM_IMPORT = `import "@revenium/middleware/google/genai"; // Revenium: auto-patches Google GenAI SDK`;
+const REVENIUM_IMPORT = `import { GoogleGenAIController } from "@revenium/middleware/google/genai"; // Revenium: controller wrapper for Google GenAI`;
 
 export function transformNodeGoogleGenAI(
   content: string,
@@ -17,10 +17,7 @@ export function transformNodeGoogleGenAI(
   const changes: string[] = [];
   let result = content;
 
-  if (
-    hasImport(result, "@revenium/middleware/google/genai") ||
-    hasImport(result, "@revenium/middleware/google")
-  ) {
+  if (hasImport(result, "@revenium/middleware/google/genai")) {
     return {
       content: result,
       modified: false,

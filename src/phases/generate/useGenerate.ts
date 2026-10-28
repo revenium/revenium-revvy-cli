@@ -2,13 +2,9 @@ import { useState, useEffect } from "react";
 import { join } from "path";
 import type { MeteringDesign } from "../../types/metering-design.js";
 import type { ScanResult } from "../../types/scan-result.js";
-import { renderTemplate } from "../../utils/template-engine.js";
 import { safeWriteFile } from "../../utils/fs-helpers.js";
 import { writeMeteringDesign, getDesignFilename } from "./utils/design-writer.js";
-
-// Templates are loaded as strings via tsup's .ejs loader.
-import nodeTemplate from "./templates/node-ts/revenium-config.ts.ejs";
-import pythonTemplate from "./templates/python/revenium_config.py.ejs";
+import { configHelperFileName, renderConfigHelper } from "./config-helper.js";
 
 interface UseGenerateOptions {
   targetDir: string;
@@ -27,43 +23,6 @@ interface GenerateState {
   step: GenerateStep;
   generatedFiles: string[];
   error?: string;
-}
-
-function getTemplateData(design: MeteringDesign) {
-  return {
-    providers: design.detectedProviders,
-    organization: design.organization,
-    products: design.products,
-    agents: design.agents,
-    taskTypes: design.taskTypes,
-    trackingGoal: design.trackingGoal,
-    outcomeTracking: design.outcomeTracking,
-    centralizedCallPattern: design.centralizedCallPattern,
-  };
-}
-
-function getUtilityFilePath(
-  targetDir: string,
-  language: string
-): { filePath: string; fileName: string } {
-  switch (language) {
-    case "python":
-      return {
-        filePath: join(targetDir, "revenium_config.py"),
-        fileName: "revenium_config.py",
-      };
-    case "go":
-      return {
-        filePath: join(targetDir, "revenium_config.go"),
-        fileName: "revenium_config.go",
-      };
-    case "node":
-    default:
-      return {
-        filePath: join(targetDir, "src", "revenium-config.ts"),
-        fileName: "src/revenium-config.ts",
-      };
-  }
 }
 
 export function useGenerate({
@@ -92,25 +51,9 @@ export function useGenerate({
 
         setState((prev) => ({ ...prev, step: "generating-utility" }));
 
-        const templateData = getTemplateData(meteringDesign);
-        const language = meteringDesign.detectedLanguage;
-
-        let template: string;
-        switch (language) {
-          case "python":
-            template = pythonTemplate;
-            break;
-          case "node":
-          default:
-            template = nodeTemplate;
-            break;
-        }
-
-        const utilityContent = renderTemplate(template, templateData);
-        const { filePath, fileName } = getUtilityFilePath(
-          targetDir,
-          language
-        );
+        const utilityContent = renderConfigHelper(meteringDesign);
+        const fileName = configHelperFileName(meteringDesign.detectedLanguage);
+        const filePath = join(targetDir, fileName);
 
         if (cancelled) return;
 

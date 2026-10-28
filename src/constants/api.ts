@@ -15,7 +15,7 @@ export const REVENIUM_IDEMPOTENCY_DOCS_URL =
 export const DASHBOARD_PATHS = {
   PROVIDERS: "/connections/providers",
   SDK_SETUP: "/connections/sdk-setup",
-  DASHBOARD: "/dashboard",
+  DASHBOARD: "/performance/traces",
   ROI_DASHBOARD: "/costs-revenue/roi-dashboard",
 } as const;
 

@@ -16,7 +16,6 @@ import { buildDesignFromArgs, type CliDesignArgs } from "../consultation/design-
 import { writeMeteringDesign, getDesignFilename } from "../generate/utils/design-writer.js";
 import { writeCallSiteManifest, buildCallSiteManifest, getManifestFilename } from "../generate/utils/manifest-writer.js";
 import { writeModifiedFilesManifest } from "../generate/utils/modified-files-writer.js";
-import { renderTemplate } from "../../utils/template-engine.js";
 import { safeWriteFile, fileExists, ensureDir } from "../../utils/fs-helpers.js";
 import { buildEnvContent } from "../../utils/env-helpers.js";
 import { detectPackageManager } from "../../utils/package-manager.js";
@@ -34,8 +33,7 @@ import { join, relative, resolve } from "path";
 import { createPatch } from "diff";
 import type { ScanResult } from "../../types/scan-result.js";
 
-import nodeTemplate from "../generate/templates/node-ts/revenium-config.ts.ejs";
-import pythonTemplate from "../generate/templates/python/revenium_config.py.ejs";
+import { configHelperFileName, renderConfigHelper } from "../generate/config-helper.js";
 
 export interface PipelineArgs {
   apiKey?: string;
@@ -160,22 +158,8 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
   log("✓", "Metering design built");
 
   // 4. Generate config files (skip in dry-run)
-  const utilityFile = design.detectedLanguage === "python"
-    ? "revenium_config.py"
-    : "src/revenium-config.ts";
-
-  // Build template data once — shared between write and dry-run paths.
-  const template = design.detectedLanguage === "python" ? pythonTemplate : nodeTemplate;
-  const templateData = {
-    providers: design.detectedProviders,
-    organization: design.organization,
-    products: design.products,
-    agents: design.agents,
-    taskTypes: design.taskTypes,
-    trackingGoal: design.trackingGoal,
-    outcomeTracking: design.outcomeTracking,
-    centralizedCallPattern: design.centralizedCallPattern,
-  };
+  const utilityFile = configHelperFileName(design.detectedLanguage);
+  const utilityContent = renderConfigHelper(design);
 
   if (!args.dryRun) {
     await writeMeteringDesign(targetDir, design);
@@ -190,7 +174,6 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
 
     if (!pmInfo?.isMonorepo) {
       // Single-package project — write helper directly. Layout is unambiguous.
-      const utilityContent = renderTemplate(template, templateData);
       await safeWriteFile(join(targetDir, utilityFile), utilityContent);
       log("✓", `Created ${utilityFile}`);
     } else {
@@ -200,8 +183,6 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
 
   // 5. Instrument (or dry-run preview)
   if (args.dryRun) {
-    // Build config file contents for "would create" display
-    const utilityContent = renderTemplate(template, templateData);
     const designContent = JSON.stringify(design, null, 2);
     // Dry-run preview shows pre-instrumentation line numbers (the file hasn't
     // been edited yet). On a real run we re-scan after instrumentCallSites and

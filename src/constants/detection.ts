@@ -48,6 +48,7 @@ export const AI_PROVIDER_PACKAGES: Record<
     "cloud.google.com/go/vertexai": "Vertex AI",
     "github.com/aws/aws-sdk-go-v2/service/bedrockruntime": "AWS Bedrock",
     "github.com/fal-ai/fal-go": "fal.ai",
+    "github.com/ollama/ollama": "Ollama",
   },
 };
 
@@ -58,18 +59,6 @@ export const AI_PROVIDER_PACKAGES: Record<
  */
 export const REVENIUM_SDK_PACKAGES: Record<SupportedLanguage, string[]> = {
   node: ["@revenium/middleware"],
-  python: [
-    "revenium-python-sdk",
-    "revenium-middleware",
-    "revenium-middleware-openai",
-    "revenium_middleware",
-    "revenium_middleware_openai",
-  ],
-  go: [
-    "github.com/revenium/revenium-middleware-openai-go",
-    "github.com/revenium/revenium-middleware-anthropic-go",
-    "github.com/revenium/revenium-middleware-google-go",
-    "github.com/revenium/revenium-middleware-fal-go",
-    "github.com/revenium/revenium-middleware-runway-go",
-  ],
+  python: ["revenium-python-sdk", "revenium_middleware"],
+  go: ["github.com/revenium/revenium-go-sdk"],
 };

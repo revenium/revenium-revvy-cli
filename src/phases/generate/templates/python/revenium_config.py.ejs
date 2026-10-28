@@ -21,10 +21,26 @@ Usage:
 Required env vars (loaded automatically by `from dotenv import load_dotenv; load_dotenv()`):
     REVENIUM_METERING_API_KEY=rev_mk_...
     REVENIUM_METERING_BASE_URL=https://api.revenium.ai   (optional, default)
+    REVENIUM_WRITE_API_KEY=rev_sk_...                    (only for job outcome reporting)
 """
 
+<%_ if (agents.length > 0) { -%>
 from functools import wraps
 from typing import Any, Callable, Dict, Optional
+<%_ } else { -%>
+from typing import Any, Dict, Optional
+<%_ } -%>
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
+<%_ if (agents.length > 0) { -%>
+from revenium_middleware import revenium_metadata
+<%_ } -%>
 
 <%_ const hasOpenAI = providers.includes('OpenAI') || providers.includes('Azure OpenAI') -%>
 <%_ const hasAnthropic = providers.includes('Anthropic') -%>
@@ -34,7 +50,7 @@ from typing import Any, Callable, Dict, Optional
 <%_ const hasPerplexity = providers.includes('Perplexity') -%>
 <%_ const isApiKey = organization.source === 'api-key' -%>
 <%_ if (hasOpenAI) { -%>
-import revenium_middleware.openai.middleware  # noqa: F401  — auto-patches OpenAI SDK on import
+import revenium_middleware.openai  # noqa: F401  — auto-patches OpenAI SDK on import
 <%_ } -%>
 <%_ if (hasAnthropic) { -%>
 import revenium_middleware.anthropic  # noqa: F401  — auto-patches Anthropic SDK on import
@@ -70,6 +86,10 @@ def create_usage_metadata(
     agentic_job_id: Optional[str] = None,
     agentic_job_name: Optional[str] = None,
     ticket_id: Optional[str] = None,
+<%_ if (agents.length > 0) { -%>
+    agent_version: Optional[str] = None,
+<%_ } -%>
+    subagent_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Build the per-request `usage_metadata` dict from your application's
@@ -97,6 +117,10 @@ def create_usage_metadata(
         agentic_job_id: Optional unique identifier tied to a business outcome (AI Outcomes).
         agentic_job_name: Optional human-readable job name for the agentic outcome.
         ticket_id: Optional external ticket/issue ID for cost attribution (max 256 chars).
+<%_ if (agents.length > 0) { -%>
+        agent_version: Optional release of the agent code that made the call (max 64 chars).
+<%_ } -%>
+        subagent_type: Optional sub-agent that made the call in a multi-agent system (max 128 chars, [A-Za-z0-9._:-]).
     """
     metadata: Dict[str, Any] = {}
 
@@ -115,7 +139,11 @@ def create_usage_metadata(
 <%_ if (agents.length > 0) { -%>
     if agent:
         metadata["agent"] = agent
+    if agent_version:
+        metadata["agent_version"] = agent_version
 <%_ } -%>
+    if subagent_type:
+        metadata["subagent_type"] = subagent_type
     if task_type:
         metadata["task_type"] = task_type
     if trace_id:
@@ -132,9 +160,10 @@ def create_usage_metadata(
 
 <%_ if (agents.length > 0) { -%>
 # ----------------------------------------------------------------------------
-# Per-agent decorator helpers — wrap a function so every AI call inside it
-# carries the right agent attribution. Inject your auth accessor via
-# `get_<%- isApiKey ? 'api_key' : 'customer_id' %>`.
+# Per-agent decorator helpers — every AI call made inside the decorated
+# function carries the agent attribution (via the SDK's `revenium_metadata`
+# scope), whether or not the call passes `usage_metadata` itself. Inject your
+# auth accessor via `get_<%- isApiKey ? 'api_key' : 'customer_id' %>`.
 # ----------------------------------------------------------------------------
 <%_ for (const agent of agents) { -%>
 
@@ -170,8 +199,7 @@ def track_as_<%- agent.name.replace(/[^a-zA-Z0-9_]/g, '_') %>(
 <%_ } -%>
                 agent="<%- agent.name %>",
             )
-            kwargs.setdefault("usage_metadata", {}).update(metadata)
-            return func(*args, **kwargs)
+            return revenium_metadata(**metadata)(func)(*args, **kwargs)
         return wrapper
     return decorator
 <%_ } -%>
@@ -238,8 +266,9 @@ def track_as_<%- agent.name.replace(/[^a-zA-Z0-9_]/g, '_') %>(
 #   response = client.models.generate_content(
 #       model="gemini-2.0-flash-001",
 #       contents="Hello!",
-#       # usage_metadata pattern: pass via context
+#       usage_metadata=create_usage_metadata(...),
 #   )
+#   # Vertex AI: same call on genai.Client(vertexai=True, project=..., location=...)
 <%_ } -%>
 <%_ if (hasLiteLLM) { -%>
 #

@@ -1,30 +1,36 @@
 import type { ProviderPattern } from "./node-patterns.js";
 
+const GO_SDK = "github.com/revenium/revenium-go-sdk";
+
 export const GO_PATTERNS: ProviderPattern[] = [
   {
     provider: "openai",
     displayName: "OpenAI",
     packageNames: [
       "github.com/openai/openai-go",
+      "github.com/openai/openai-go/v2",
       "github.com/openai/openai-go/v3",
       "github.com/sashabaranov/go-openai",
     ],
     language: "go",
     callPatterns: [
-      // openai/openai-go: client.Chat().Completions().New(ctx, params)
+      { methodChain: "Chat.Completions.New", operationType: "chat" },
+      { methodChain: "Chat.Completions.NewStreaming", operationType: "chat" },
+      { methodChain: "Embeddings.New", operationType: "embed" },
+      { methodChain: "Images.Generate", operationType: "image" },
+      { methodChain: "Responses.New", operationType: "response" },
       { methodChain: "Chat().Completions().New", operationType: "chat" },
-      { methodChain: "Embeddings().New", operationType: "embed" },
+      { methodChain: "Chat().Completions().NewStreaming", operationType: "chat" },
+      { methodChain: "Embeddings().Create", operationType: "embed" },
       { methodChain: "Images().Generate", operationType: "image" },
-      // sashabaranov/go-openai
+      { methodChain: "Responses().Create", operationType: "response" },
       { methodChain: "CreateChatCompletion", operationType: "chat" },
       { methodChain: "CreateChatCompletionStream", operationType: "chat" },
       { methodChain: "CreateCompletion", operationType: "completion" },
       { methodChain: "CreateEmbeddings", operationType: "embed" },
       { methodChain: "CreateImage", operationType: "image" },
     ],
-    instrumentationImports: [
-      "github.com/revenium/revenium-middleware-openai-go",
-    ],
+    instrumentationImports: [`${GO_SDK}/openai`],
   },
   {
     provider: "anthropic",
@@ -32,13 +38,14 @@ export const GO_PATTERNS: ProviderPattern[] = [
     packageNames: ["github.com/anthropics/anthropic-sdk-go"],
     language: "go",
     callPatterns: [
+      { methodChain: "Messages.New", operationType: "chat" },
+      { methodChain: "Messages.NewStreaming", operationType: "chat" },
       { methodChain: "Messages().CreateMessage", operationType: "chat" },
-      { methodChain: "Messages().New", operationType: "chat" },
-      { methodChain: "Messages().Stream", operationType: "chat" },
+      { methodChain: "Messages().CreateMessageStream", operationType: "chat" },
+      { methodChain: "BetaMessages().CreateMessage", operationType: "chat" },
+      { methodChain: "BetaMessages().CreateMessageStream", operationType: "chat" },
     ],
-    instrumentationImports: [
-      "github.com/revenium/revenium-middleware-anthropic-go",
-    ],
+    instrumentationImports: [`${GO_SDK}/anthropic`],
   },
   {
     provider: "google-genai",
@@ -46,13 +53,20 @@ export const GO_PATTERNS: ProviderPattern[] = [
     packageNames: ["google.golang.org/genai"],
     language: "go",
     callPatterns: [
+      { methodChain: "Models.GenerateContent", operationType: "chat" },
+      { methodChain: "Models.GenerateContentStream", operationType: "chat" },
+      { methodChain: "Models.EmbedContent", operationType: "embed" },
+      { methodChain: "Chats.Create", operationType: "chat" },
       { methodChain: "Models().GenerateContent", operationType: "chat" },
       { methodChain: "Models().GenerateContentStream", operationType: "chat" },
+      { methodChain: "Models().CreateEmbedding", operationType: "embed" },
+      { methodChain: "Models().GenerateImage", operationType: "image" },
+      { methodChain: "Models().GenerateVideo", operationType: "video" },
       { methodChain: "Chats().Create", operationType: "chat" },
+      { methodChain: "SendMessage", operationType: "chat" },
+      { methodChain: "SendMessageStream", operationType: "chat" },
     ],
-    instrumentationImports: [
-      "github.com/revenium/revenium-middleware-google-go",
-    ],
+    instrumentationImports: [`${GO_SDK}/google`],
   },
   {
     provider: "vertex-ai",
@@ -63,9 +77,53 @@ export const GO_PATTERNS: ProviderPattern[] = [
       { methodChain: "GenerateContent", operationType: "chat" },
       { methodChain: "GenerateContentStream", operationType: "chat" },
     ],
-    instrumentationImports: [
-      "github.com/revenium/revenium-middleware-google-go",
+    instrumentationImports: [`${GO_SDK}/google`],
+  },
+  {
+    provider: "ollama",
+    displayName: "Ollama",
+    packageNames: ["github.com/ollama/ollama/api"],
+    language: "go",
+    callPatterns: [
+      { methodChain: "Chat", operationType: "chat" },
+      { methodChain: "Generate", operationType: "chat" },
+      { methodChain: "Embed", operationType: "embed" },
+      { methodChain: "Embeddings", operationType: "embed" },
+      { methodChain: "ChatCompletions", operationType: "chat" },
     ],
+    instrumentationImports: [`${GO_SDK}/ollama`],
+  },
+  {
+    provider: "perplexity",
+    displayName: "Perplexity",
+    packageNames: [],
+    language: "go",
+    callPatterns: [],
+    instrumentationImports: [`${GO_SDK}/perplexity`],
+  },
+  {
+    provider: "litellm",
+    displayName: "LiteLLM",
+    packageNames: [],
+    language: "go",
+    callPatterns: [],
+    instrumentationImports: [`${GO_SDK}/litellm`],
+  },
+  {
+    provider: "groq",
+    displayName: "Groq",
+    packageNames: [],
+    language: "go",
+    callPatterns: [],
+    instrumentationImports: [`${GO_SDK}/groq`],
+  },
+  {
+    provider: "grok",
+    displayName: "Grok (xAI)",
+    packageNames: [],
+    language: "go",
+    callPatterns: [],
+    instrumentationImports: [`${GO_SDK}/grok`],
   },
   {
     provider: "fal-ai",
@@ -74,12 +132,13 @@ export const GO_PATTERNS: ProviderPattern[] = [
     language: "go",
     callPatterns: [
       { methodChain: "GenerateImage", operationType: "image" },
+      { methodChain: "GenerateVideo", operationType: "video" },
+      { methodChain: "GenerateAudio", operationType: "audio" },
       { methodChain: "Run", operationType: "image" },
       { methodChain: "Subscribe", operationType: "image" },
+      { methodChain: "Stream", operationType: "image" },
     ],
-    instrumentationImports: [
-      "github.com/revenium/revenium-middleware-fal-go",
-    ],
+    instrumentationImports: [`${GO_SDK}/fal`],
   },
   {
     provider: "runway-ml",
@@ -88,11 +147,10 @@ export const GO_PATTERNS: ProviderPattern[] = [
     language: "go",
     callPatterns: [
       { methodChain: "ImageToVideo", operationType: "video" },
-      { methodChain: "TextToVideo", operationType: "video" },
+      { methodChain: "VideoToVideo", operationType: "video" },
+      { methodChain: "UpscaleVideo", operationType: "video" },
     ],
-    instrumentationImports: [
-      "github.com/revenium/revenium-middleware-runway-go",
-    ],
+    instrumentationImports: [`${GO_SDK}/runway`],
   },
   {
     provider: "aws-bedrock",
@@ -106,5 +164,6 @@ export const GO_PATTERNS: ProviderPattern[] = [
       { methodChain: "ConverseStream", operationType: "chat" },
     ],
     instrumentationImports: [],
+    installModule: `${GO_SDK}/anthropic`,
   },
 ];

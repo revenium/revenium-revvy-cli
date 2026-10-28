@@ -1,6 +1,6 @@
 {
   "name": "@revenium/revvy",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Revvy — AI-powered assistant for Revenium",
   "type": "module",
   "bin": {
@@ -90,5 +90,11 @@
     "tsx": "^4.21.0",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.58.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "ws@>=8.0.0 <8.21.0": "^8.21.0",
+      "brace-expansion@>=2.0.0 <2.1.7": "^2.1.7"
+    }
   }
 }

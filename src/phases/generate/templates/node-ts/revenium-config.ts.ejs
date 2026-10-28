@@ -11,10 +11,16 @@
  *   - Anthropic → auto-patches the standard SDK on import; metadata is passed
  *     INLINE as a `usageMetadata` field on .messages.create({...})
  *   - Google GenAI / Vertex AI → controller pattern; metadata as 3rd arg
+ *     (Vertex: before the optional projectId / location arguments)
+ *   - LiteLLM proxy → initialize() patches fetch; metadata as x-revenium-* headers
  *
  * Required env vars (loaded from .env automatically):
  *   REVENIUM_METERING_API_KEY=rev_mk_...
  *   REVENIUM_METERING_BASE_URL=https://api.revenium.ai   (optional, default)
+ *
+ * The jobs API (JobContext / reportJobOutcome) reads the same key. Only the
+ * process that reports outcomes needs REVENIUM_METERING_API_KEY to be a write
+ * key (rev_sk_...); processes that only meter keep the rev_mk_... key.
  */
 <%_ const hasOpenAI = providers.includes('OpenAI') || providers.includes('Azure OpenAI') -%>
 <%_ const hasAnthropic = providers.includes('Anthropic') -%>

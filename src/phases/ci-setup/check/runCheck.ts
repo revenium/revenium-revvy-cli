@@ -1,10 +1,12 @@
 import { readFile } from "fs/promises";
 import { join } from "path";
 import { detectDependencies, detectCallSites, detectExistingInstrumentation, detectImportedProviderPackages } from "../../scan/detectors/index.js";
-import { buildAllProviders } from "../../scan/build-all-providers.js";
+import { buildAllProviders, normalizeProviderName } from "../../scan/build-all-providers.js";
 import type { CallSite, DetectedProvider } from "../../../types/scan-result.js";
 import type { SupportedLanguage } from "../../../constants/languages.js";
 import { REVENIUM_SDK_PACKAGES } from "../../../constants/detection.js";
+import { GO_PATTERNS } from "../../scan/patterns/go-patterns.js";
+import { getPatternsForLanguage } from "../../scan/patterns/index.js";
 import { loadConfig, type ReveniumCheckConfig } from "./loadConfig.js";
 import { detectMultiEntryPointWarnings, type EntryPointWarning } from "./entry-point-detector.js";
 
@@ -70,6 +72,7 @@ function classifyCallSites(
   instrumentedFiles: Map<string, Set<string>>,
   hasReveniumSdk: boolean,
   config: ReveniumCheckConfig,
+  language: SupportedLanguage,
 ): { wrapped: CallSite[]; unwrapped: UnwrappedCallSite[] } {
   const wrapped: CallSite[] = [];
   const unwrapped: UnwrappedCallSite[] = [];
@@ -98,7 +101,7 @@ function classifyCallSites(
         ...site,
         suggestion: hasReveniumSdk
           ? `Add Revenium instrumentation import for ${site.provider} in this file`
-          : `Install @revenium/middleware and add instrumentation for ${site.provider}`,
+          : `Install ${reveniumSdkFor(language, site.provider)} and add instrumentation for ${site.provider}`,
       });
     }
   }
@@ -110,22 +113,32 @@ function classifyCallSites(
  * Check if any detected AI provider SDKs are installed without the
  * corresponding Revenium middleware package.
  */
-/**
- * Maps from a DetectedProvider.name (derived from the npm package name, e.g.
- * "anthropic-ai-sdk") to the canonical provider key used in patterns and
- * instrumentation detection (e.g. "anthropic").
- */
-const PROVIDER_NAME_ALIASES: Record<string, string> = {
-  "anthropic-ai-sdk": "anthropic",
-  "google-genai": "google-genai",
-  "google-generative-ai": "google-genai",
-  "google-cloud-vertexai": "vertex-ai",
-  "aws-sdk-client-bedrock-runtime": "bedrock",
-  "azure-openai": "openai",
-};
+function goMiddlewareModule(providerName: string, normalized: string): string {
+  const pattern =
+    GO_PATTERNS.find((p) => p.provider === providerName) ??
+    GO_PATTERNS.find((p) => p.provider === normalized);
+  return pattern?.installModule ?? pattern?.instrumentationImports[0] ?? "github.com/revenium/revenium-go-sdk";
+}
 
-function normalizeProviderName(name: string): string {
-  return PROVIDER_NAME_ALIASES[name] ?? name;
+function instrumentationImportFor(language: SupportedLanguage, provider: string): string | undefined {
+  const pattern = getPatternsForLanguage(language).find((p) => p.provider === provider);
+  const marker = pattern?.instrumentationImports[0];
+  if (!marker) return undefined;
+  return language === "python" ? `import ${marker}` : marker;
+}
+
+function reveniumSdkFor(language: SupportedLanguage, provider: string): string {
+  if (language === "node") return "@revenium/middleware";
+  if (language === "python") return "revenium-python-sdk";
+  return goMiddlewareModule(provider, normalizeProviderName(provider));
+}
+
+function isPackageImported(packageName: string, importedPackages: Set<string>): boolean {
+  if (importedPackages.has(packageName)) return true;
+  for (const imported of importedPackages) {
+    if (imported.startsWith(`${packageName}/`)) return true;
+  }
+  return false;
 }
 
 function findProvidersWithoutMiddleware(
@@ -152,14 +165,9 @@ function findProvidersWithoutMiddleware(
 
     // Case 1: Package is NOT imported anywhere in source code — suppress the
     // warning entirely. The package is installed but not actually used.
-    const isImported = importedPackages.has(provider.packageName);
-    if (!isImported) continue;
+    if (!isPackageImported(provider.packageName, importedPackages)) continue;
 
-    const middlewarePkg = language === "node"
-      ? "@revenium/middleware"
-      : language === "python"
-        ? "revenium-python-sdk"
-        : `revenium-middleware-${normalized}-go`;
+    const middlewarePkg = reveniumSdkFor(language, provider.name);
 
     const hasCallSites =
       callSiteProviders.has(normalized) || callSiteProviders.has(provider.name);
@@ -170,9 +178,11 @@ function findProvidersWithoutMiddleware(
       results.push({
         provider: provider.displayName,
         packageName: provider.packageName,
-        suggestion: hasAnySdk
-          ? `Add instrumentation import for ${provider.displayName} (e.g. @revenium/middleware/${normalized})`
-          : `Install ${middlewarePkg} to instrument ${provider.displayName} calls`,
+        suggestion: language === "go"
+          ? `Import ${middlewarePkg} to instrument ${provider.displayName} calls`
+          : hasAnySdk
+            ? `Add instrumentation import for ${provider.displayName} (e.g. ${instrumentationImportFor(language, normalized) ?? middlewarePkg})`
+            : `Install ${middlewarePkg} to instrument ${provider.displayName} calls`,
       });
     } else {
       // Case 3: Package imported AND 0 call sites detected AND missing middleware
@@ -250,6 +260,7 @@ export async function runCheck(targetDir: string, excludePatterns?: string[]): P
     instrumentedFiles,
     instrumentation.detected,
     config,
+    language,
   );
 
   // Collect all providers that have instrumentation somewhere

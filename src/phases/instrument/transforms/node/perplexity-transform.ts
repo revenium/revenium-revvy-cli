@@ -8,7 +8,7 @@
 import type { TransformContext, TransformResult } from "./base-node-transform.js";
 import { hasImport, buildNodeCommentBlock, insertNodeBlock } from "./base-node-transform.js";
 
-const REVENIUM_IMPORT = `import "@revenium/middleware/perplexity"; // Revenium: client wrapper for Perplexity metering`;
+const REVENIUM_IMPORT = `import { Initialize as InitializeReveniumPerplexity, GetClient as GetReveniumPerplexity } from "@revenium/middleware/perplexity";`;
 
 /**
  * Heuristic: does this Node/TS file look like it's using the Perplexity API?

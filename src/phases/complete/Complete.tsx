@@ -8,7 +8,7 @@ import type {
   BillingProvidersResult,
 } from "../../types/revvy-state.js";
 import type { MeteringDesign } from "../../types/metering-design.js";
-import { getProviderSyncMetadata } from "../../constants/billingProviders.js";
+import { getProviderSyncMetadata, DAILY_REFRESH_NOTE } from "../../constants/billingProviders.js";
 import {
   REVENIUM_DASHBOARD_URL,
   DASHBOARD_PATHS,
@@ -188,7 +188,7 @@ export function Complete({
         {isBillingOnly && (
           <>
             <Text>
-              {"  "}Check your billing dashboard for incoming data:
+              {"  "}Check your billing dashboard for incoming data ({DAILY_REFRESH_NOTE})
             </Text>
             <Text color={colors.primary}>
               {"  "}{REVENIUM_DASHBOARD_URL}{DASHBOARD_PATHS.PROVIDERS}

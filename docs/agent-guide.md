@@ -44,9 +44,9 @@ All commands below use `npx @revenium/revvy`. If the CLI was installed globally 
 ## What Revvy Does
 
 Revenium tracks the cost of AI API calls tied to business context — which customer, which product, which agent, which workflow, which business outcome. Revvy:
-1. **Scans** the codebase for AI provider SDKs (OpenAI, Anthropic, Google GenAI, LiteLLM, Ollama, Perplexity)
+1. **Scans** the codebase for AI provider SDKs (OpenAI, Anthropic, Google GenAI, Vertex AI, LiteLLM, Ollama, Perplexity, fal.ai, AWS Bedrock, LangChain, Vercel AI SDK) in Node, Python and Go projects
 2. **Instruments** every AI call site by adding Revenium middleware imports and a copy-paste-ready `usage_metadata` reference comment
-3. **Generates** a config helper (`revenium_config.py` or `revenium-config.ts`) and a metering design file
+3. **Generates** a config helper (`revenium_config.py`, `revenium-config.ts` or `revenium/config.go`) and a metering design file
 4. **Sets up** CI guardrails (GitHub Actions) and editor rules
 5. **Equips you (the AI coding assistant)** to lead a follow-up "AI Outcomes design" conversation with the developer — turning basic per-customer cost tracking into per-workflow analytics and per-outcome ROI measurement (see Step 7)
 
@@ -70,6 +70,8 @@ Search the source code for these imports:
 **Python**: `import openai`, `import anthropic`, `import ollama`, `import litellm`, `from google import genai`, `import vertexai`
 
 **Node**: `import OpenAI from "openai"`, `import Anthropic from "@anthropic-ai/sdk"`, `import { GoogleGenAI } from "@google/genai"`
+
+**Go**: `github.com/openai/openai-go/v3`, `github.com/anthropics/anthropic-sdk-go`, `google.golang.org/genai`, `github.com/ollama/ollama/api`
 
 ### Step 3: Find the customer ID (REQUIRED)
 This is the most critical piece — how does this app know WHICH CUSTOMER is making the request? Revenium attributes every AI call's cost to a specific customer using the value this expression returns.
@@ -316,17 +318,17 @@ Identify multi-call workflows that need a shared traceId, and propose where to g
 
 For each workflow that has a clear business outcome, propose a Job naming scheme tied to a real-world entity in the customer's system. Then identify where in the code outcomes get reported.
 
-The SDK fields are `agenticJobId` (required, max 256 chars) and `agenticJobName` (optional human-readable, max 512 chars). The customer-facing concept is **AI Outcomes** — Revenium tracks Jobs as the unit of work, and what matters to the customer is the outcome each Job produces.
+The SDK fields are `agenticJobId` (required — 1 to 255 chars, starting with a letter or digit, only `[A-Za-z0-9._-]`; `types` and `conversion-funnel` are reserved, and a violation is a `400`) and `agenticJobName` (optional, human-readable). The customer-facing concept is **AI Outcomes** — Revenium tracks Jobs as the unit of work, and what matters to the customer is the outcome each Job produces.
 
 **Optional Job-level fields** (set on any transaction with that `agenticJobId` — the first one materializes the Job and these fields stick):
 
 | Field | Type | Purpose |
 |---|---|---|
 | `agenticJobType` | string (normalized to lowercase server-side) | The **workflow category**, free-form — not a fixed enum. Use lowercase, hyphen-separated, specific and action-oriented names: `loan-application-review`, `customer-support-chat`, `code-review-security`, `lead-qualification`. Surfaced as `type` on the Job entity and it is the grouping behind the dashboard's Job Types by Value Ratio table, so generic values (`ai`, `agent`, `workflow`, `review`) collapse everything into one bucket and make that analysis useless. Be consistent across the codebase. |
-| `agenticJobVersion` | string | Version of your agent/workflow code (e.g. `"1.2.3"`, `"v2-beta"`). Lets you A/B compare cost-per-outcome across versions. |
-| `environment` | string | Runtime environment (`"production"`, `"staging"`, `"sandbox"`). On the Anthropic Node SDK, currently only settable via env var `REVENIUM_ENVIRONMENT` — see the per-SDK matrix. |
+| `agenticJobVersion` | string | Version of the **Job definition** — the workflow's contract or prompt chain (e.g. `"2026-10"`, `"v2-beta"`). Lets you A/B compare cost-per-outcome across versions of the workflow. It is **not** the version of the agent code that made a call; that is the per-call `agentVersion` (see "Revenium Data Model"). |
+| `environment` | string | Runtime environment (`"production"`, `"staging"`, `"sandbox"`). Settable per call on both SDKs; `REVENIUM_ENVIRONMENT` is the process-wide fallback. |
 
-These all surface in the Jobs view of the dashboard and in the `/profitstream/v2/api/jobs/{agenticJobId}` GET response.
+These all surface in the Jobs view of the dashboard and in the `/profitstream/v2/api/jobs/{agenticJobId}` GET response, which also carries `entityVersion` — the token that makes an outcome correction conditional (see "Correcting an outcome").
 
 > **Note:** `agenticJobId` and `agenticJobName` require the latest version of the Revenium middleware. Set them now — they will activate automatically once you upgrade. If the Jobs view in the dashboard stays empty, upgrade the SDK and verify you're on the latest version:
 > - **Python:** `pip install --upgrade "revenium-python-sdk[openai,anthropic]"`
@@ -490,10 +492,12 @@ curl -X POST 'https://api.revenium.ai/meter/v2/ai/completions' \
     "requestDuration":     1234,                   // REQUIRED — milliseconds
     "stopReason":          "END",                  // REQUIRED — END | END_SEQUENCE | TIMEOUT | TOKEN_LIMIT | COST_LIMIT | COMPLETION_LIMIT | ERROR | CANCELLED | CONTENT_FILTER | TOOL_CALL
     "organizationName":    "<your-customer-id>",
-    "agenticJobId":        "<job-id>",
+    "agenticJobId":        "<job-id>",                   // [A-Za-z0-9._-], 1-255 chars, starts with a letter or digit
     "agenticJobName":      "<human-readable name>",
     "agenticJobType":      "loan-application-review", // optional — free-form workflow category, lowercase-hyphenated (see the Jobs section)
-    "agenticJobVersion":   "1.0.0",                // optional — version of your agent code
+    "agenticJobVersion":   "1.0.0",                // optional — version of the Job definition (sticks to the Job)
+    "agentVersion":        "1.4.2",                // optional — version of the agent that made THIS call, max 64 chars
+    "subagentType":        "researcher",           // optional — which sub-agent made THIS call, max 128 chars, [A-Za-z0-9._:-]
     "environment":         "production",           // optional — production | staging | sandbox
     "taskType":            "<workflow-category>",
     "traceId":             "<correlation-id>"
@@ -502,15 +506,24 @@ curl -X POST 'https://api.revenium.ai/meter/v2/ai/completions' \
 
 > The middleware sends all of these automatically. This curl shape is for **manual testing only** (e.g. when probing the API directly without booting your app). A successful metering POST answers **`201`**, not `200`. If you skip any of the REQUIRED fields it returns `400` and the Job never materializes — which then makes outcome reporting return `404`. The `Idempotency-Key` header is optional but makes a retry safe; see "Retry safety for metering" below.
 
+**Optional call-attribution fields** (per transaction, unlike the Job-level fields — a Job that fans out across several sub-agents keeps one `agenticJobId` and carries a different `subagentType` on each call):
+
+| Field | Type | Purpose |
+|---|---|---|
+| `agentVersion` | string, max 64 | Release of the agent code that produced this completion (`"1.4.2"`, a git SHA). Shown on the job page and across a job type, so a regression after a deploy is visible per version. |
+| `subagentType` | string, max 128, `[A-Za-z0-9._:-]` | The sub-agent inside a multi-agent system that made the call (`planner`, `researcher`, `code-reviewer`). Open vocabulary — a well-formed value you invent is stored as sent. Skip it in a single-agent app. |
+
+Both reject a blank value or one outside the character set with a `400` rather than truncating it. SDK support differs — check "Per-SDK + per-provider extras" before promising either. The same contract also carries `querySource`, `promptId`, `promptLength` and `speed`: those describe a coding-assistant client (Claude Code reports them about itself), not an application, so do not invent values for them.
+
 **How to report an outcome** (after the Job's terminal action):
 
-> **Important:** The outcome API requires a **write key** (`rev_sk_*`), not the metering key (`rev_mk_*`) used for sending transactions. Add `REVENIUM_API_KEY=<your-write-key>` to `.env` alongside `REVENIUM_METERING_API_KEY`. Get the write key at https://app.revenium.ai/connections/sdk-setup.
+> **Important:** The outcome API requires a **write key** (`rev_sk_*`), not the metering key (`rev_mk_*`) used for sending transactions. Get it at https://app.revenium.ai/connections/sdk-setup (Permissions: **WRITE**). Where it goes depends on the SDK: the Python SDK reads `REVENIUM_WRITE_API_KEY` (it has no `REVENIUM_API_KEY`); the Node SDK's jobs client uses the **same** key as metering (`REVENIUM_METERING_API_KEY` — `REVENIUM_API_KEY` is only an alias of it), so the one Node process that reports outcomes runs on a `rev_sk_*` key, which also meters — keep every process that only meters on its `rev_mk_*` key; the Go SDK takes the key in `jobs.JobClientConfig{APIKey: ...}` and rejects a `rev_mk_*` key when the client is built (convention: `REVENIUM_WRITE_API_KEY`).
 >
-> Revenium has three key scopes and the prefix tells you which you were handed: `rev_mk_*` metering-only (ingestion), `rev_sk_*` write / full access (outcome reporting, provisioning), `rev_rk_*` read-only (dashboards and reports). A `rev_rk_*` key will read `/users/me` happily and then fail on the first write, so check the prefix rather than inferring the scope from a successful auth check. revvy verifies a `rev_mk_*` key by POSTing an empty body to the ingestion endpoint — a `400` proves the key authenticates without metering anything, while `401`/`403` means the key is bad. Use the narrowest scope that does the job.
+> Revenium has three key scopes and the prefix tells you which you were handed: `rev_mk_*` metering-only (ingestion), `rev_sk_*` write / full access (outcome reporting, provisioning), `rev_rk_*` read-only (dashboards and reports). A `rev_rk_*` key will read `/users/me` happily and then fail on the first write, so check the prefix rather than inferring the scope from a successful auth check. revvy verifies a `rev_mk_*` key by POSTing an empty body to the ingestion endpoint — a `400` proves the key authenticates without metering anything, while `401`/`403` means the key is bad. The same metering key on a platform path such as `/users/me` gets `403 Insufficient API key scope`: a scope problem, not a bad key. Use the narrowest scope that does the job. Older accounts may also hold legacy `hak_*` keys: they still authenticate, but their scope lives server-side rather than in the prefix, so the prefix tells you nothing — prefer issuing a scoped key.
 
 Option A — **via the SDK** (preferred whenever the middleware is already installed):
 
-Both middlewares ship a first-class jobs API, so there is no reason to hand-roll the HTTP call. Python (`revenium-python-sdk >= 0.4.0`):
+Both middlewares ship a first-class jobs API, so there is no reason to hand-roll the HTTP call. Python (`revenium-python-sdk >= 0.8.0` — `outcome_reason` needs `0.7.0`, `metrics` and `expected_entity_version` need `0.8.0`):
 
 ```python
 from revenium_middleware import JobContext, get_outcome_history
@@ -518,6 +531,8 @@ from revenium_middleware import JobContext, get_outcome_history
 with JobContext(job_id="loan-app-12345", type="loan-application-review") as job:
     ...  # your AI calls — they inherit agenticJobId automatically
     job.report_outcome(execution_status="SUCCESS", outcome_type="CONVERTED", outcome_value=500.0)
+    # a failure carries its reason:
+    # job.report_outcome(execution_status="FAILED", outcome_reason="upstream API returned 503")
 
 # Later, possibly from another process:
 job = JobContext.attach("loan-app-12345")
@@ -526,9 +541,11 @@ job.close()
 history = get_outcome_history("loan-app-12345")   # ordered revisions, 1 = initial report
 ```
 
-`JobContext` is worth using for one behaviour alone: **if an unhandled exception escapes the block and no outcome was reported yet, it auto-reports `execution_status="FAILED"`** (error message and class in metadata) and re-raises. That is the single most common reason a Job ends up with no outcome at all. Team resolution is `team_id=` > `REVENIUM_TEAM_ID` > derived from the API key. Catch `OutcomeReportingError` to cover the whole exception family.
+From `0.10.0`, `JobContext` raises `ValueError` for a job id that breaks the platform rule (1-255 chars, starts with a letter or digit, only letters, digits, `.`, `_` and `-`, and not the reserved `types` / `conversion-funnel`) — build ids like `order-42`, not `order:42`. The API answers `400` to the same ids, and the Go SDK checks them client-side too. An amendment through the same handle that reported the outcome is locked to the version it last saw automatically; a conflict raises `OutcomeAmendConflictError` carrying `current_entity_version`, and the SDK never retries an amendment for you.
 
-Node (`@revenium/middleware >= 1.1.9`):
+`JobContext` is worth using for one behaviour alone: **if an unhandled exception escapes the block and no outcome was reported yet, it auto-reports `execution_status="FAILED"`** (the exception class becomes `outcome_reason`; the message is included only with `REVENIUM_CAPTURE_ERROR_MESSAGES=true`, from `0.10.0`) and re-raises. That is the single most common reason a Job ends up with no outcome at all. Team resolution is `team_id=` > `REVENIUM_TEAM_ID` > derived from the API key. Catch `OutcomeReportingError` to cover the whole exception family.
+
+Node (`@revenium/middleware >= 1.2.0` — the version that added `amendJobOutcome` and `getJobOutcomeHistory`; from `1.2.0` a second `reportJobOutcome` for the same Job throws `OutcomeAlreadyReportedError` instead of returning silently, so catch it):
 
 ```ts
 import { JobContext, reportJobOutcome, amendJobOutcome, getJobOutcomeHistory } from "@revenium/middleware";
@@ -541,7 +558,9 @@ await amendJobOutcome("loan-app-12345", { reason: "Expanded to annual plan", out
 const history = await getJobOutcomeHistory("loan-app-12345");
 ```
 
-> ⚠ Two fields the API accepts are **missing from the Node typed surface** as of `@revenium/middleware@1.1.10`: `outcomeType: "UNSUCCESSFUL"` is absent from the `OutcomeType` union, and `outcomeReason` is absent from `JobOutcome` altogether. If you need either from Node today, use the direct API call below rather than fighting the types.
+> ⚠ Several fields the API accepts are **missing from the Node typed surface** as of `@revenium/middleware@2.0.0`: `outcomeType: "UNSUCCESSFUL"` is absent from the `OutcomeType` union, and `outcomeReason`, `metrics` and `expectedEntityVersion` are absent from `JobOutcome` / `JobOutcomeAmendment` altogether (and `reason` is still typed as required on the amendment). If you need any of them from Node today, use the direct API call below rather than fighting the types.
+
+Go (`github.com/revenium/revenium-go-sdk/core/jobs >= 1.1.9`): `jobs.NewJobClient(jobs.JobClientConfig{APIKey, TeamID, BaseURL})`, then `ReportJobOutcome`, `AmendJobOutcome`, `GetJobOutcomeHistory` and `AppendOutcomeMetrics`. Its types carry everything the API accepts — `OutcomeReason`, `Metrics`, `ExpectedEntityVersion` and the `UNSUCCESSFUL` outcome — and `jobs.SetJobContext` / `RunWithJobContext` stamp the job fields onto every metered call in scope.
 
 Option B — **via the API directly** (no SDK installed, or a language with no middleware; requires the write key):
 
@@ -560,7 +579,10 @@ Body:
     "outcomeCurrency": "USD",         // optional, defaults to USD — USD | EUR | CAD | GBP | JPY | CNY | MXN | COP | ARS | ZMW | AUD | ZWG
     "outcomeReason":   "",            // optional — why the job FAILED or was CANCELLED (see notes below)
     "metadata":        "{}",          // optional, free-form — a JSON *string*, not a JSON object
-    "reportedBy":      "system"       // optional — auto-set from the key if omitted
+    "reportedBy":      "system",      // optional — auto-set from the key if omitted
+    "metrics": [                      // optional — declared per-job metric facts (see "Outcome metrics" below)
+      { "key": "quality_rate", "value": 0.93, "provenance": "MEASURED" } // provenance: MEASURED | SELF_REPORTED (default) | DERIVED | ATTESTED
+    ]
   }
 ```
 
@@ -568,14 +590,15 @@ Body:
 - `executionStatus` is **required**. Calls without it return `400 "Invalid JSON format"`.
 - The monetary value field is `outcomeValue` — **not** `monetaryValue`.
 - `outcomeReason` explains **why the job itself** failed or was cancelled ("customer abandoned checkout", "upstream API returned 503"). Plain text, max 2048 chars. **Always send it with `FAILED` or `CANCELLED`** — it is the field the Jobs UI reads: the All Jobs table flags the status with an alert icon that reveals the reason on hover (plus an opt-in **Reason** column), and the job page shows it in full. A failure reported without it renders as a bare red badge nobody can act on. Do not encode the reason inside `metadata` instead — Revenium does not guess at keys in free-form JSON, so a reason buried there can never be displayed, filtered or compared. It is also distinct from the `reason` on an amendment, which explains why the *record* is being changed.
-- `metadata` is a JSON-encoded **string**, not a nested object — send `"{\"tier\":\"gold\"}"`, not `{"tier":"gold"}`.
+- `metadata` is a JSON-encoded **string**, not a nested object — send `"{\"tier\":\"gold\"}"`, not `{"tier":"gold"}`. A string that is not valid JSON is a `400`.
+- `outcomeValue` without an `outcomeType` is a `400`.
 - `teamId` in the query string must be the **hashed** team identifier (not the raw integer). Get it from `GET https://api.revenium.ai/profitstream/v2/api/users/me` (using your write key) — the response carries `teams[]` (each with a hashed `id`), `defaultTeamId`, and `tenant.id`. Use the team matching `defaultTeamId`; `teams` has no documented ordering, so `teams[0]` is only a fallback. The same hashed form appears in your dashboard URLs.
 
 > ⚠ **CRITICAL — a field-name typo fails silently, it does not fail loudly.** If you POST with `monetaryValue` instead of `outcomeValue`, the call returns `200` and the Job's outcome is recorded with `outcomeValue: null`. Unknown fields are ignored, so nothing in the response tells you the value was dropped — the Job just sits on the ROI dashboard with no value against its cost. Always validate field names against the example payload above before POSTing. The damage **is** reversible (see "Correcting an outcome" below), but only once someone notices it.
 
 **Response handling:**
 - `200` — outcome recorded with whatever fields you sent. Verify the fields you meant to set actually came back on the response; a typo is recorded silently.
-- `404` — Job not yet ingested. Metering ingestion creates the Job record asynchronously, so the outcome lookup can run before the Job exists. Retry with **exponential backoff, honouring `Retry-After`** — the SDKs budget up to 10 attempts starting at 2s and backing off to 90s, sized to absorb a rate-limit penalty. Do not retry in a tight loop: sustained 4xx trips the error-pattern limiter (see "Rate limits" below). If you are calling through the SDK, it already does this — do not wrap it in a second retry loop.
+- `404` — Job not yet ingested. Metering ingestion creates the Job record asynchronously, so the outcome lookup can run before the Job exists. Retry with **exponential backoff, honouring `Retry-After`**. The Python SDK does this for you (up to 10 attempts, 2s backing off to 90s — do not wrap it in a second loop). **The Node and Go SDKs do not retry a `404`**: Node retries only 408/429/5xx (3 retries, 1s to 5s) and Go resends a timed-out report once, so from those, back off and retry yourself. Do not retry in a tight loop: repeated 404s trip the error-pattern limiter (see "Rate limits" below).
 - `429` — rate limited. Wait at least `Retry-After` seconds. See "Rate limits" below.
 - `409` — an outcome is **already** reported for this Job. This is not a dead end: `PATCH` the outcome to correct it (below), or treat the 409 as success if you're confident the prior submission was right.
 
@@ -590,19 +613,21 @@ Headers:
   Content-Type: application/json
 Body:
   {
-    "reason":          "value was dropped by a monetaryValue typo on the first report", // REQUIRED
+    "reason":          "value was dropped by a monetaryValue typo on the first report", // recommended — optional for API-key callers (see below)
+    "expectedEntityVersion": 3,       // optional — the Job's current entityVersion; a mismatch returns 409
     "executionStatus": "SUCCESS",     // optional — omit to leave unchanged
     "outcomeType":     "CONVERTED",   // optional — omit to leave unchanged
     "outcomeValue":    42.00,         // optional — omit to leave unchanged
     "outcomeCurrency": "USD",         // optional — omit to leave unchanged
     "outcomeReason":   "",            // optional — omit to keep the current value, "" to clear it
-    "metadata":        "{}"           // optional — omit to leave unchanged
+    "metadata":        "{}",          // optional — omit to leave unchanged
+    "metrics":         []             // optional — facts to append; a key the Job already has supersedes the old value
   }
 ```
 
-- `reason` is **required** and is the audit-trail entry for the revision itself ("why is this record changing?"), not the job's failure reason. Missing or blank `reason` returns `422`.
-- `422` also means **no outcome has been reported yet** — POST first, then PATCH.
-- `409` on the PATCH means a concurrent update was detected — refetch the Job and retry.
+- `reason` is the audit-trail entry for the revision itself ("why is this record changing?"), not the job's failure reason. A dashboard (session) caller must send it. An API-key caller — the `rev_sk_*` key this guide uses — may omit it and receives an automated correction reason derived from the source instead. Send a real one anyway: "automated correction via api" tells the next reader nothing.
+- `422` means **no outcome has been reported yet** — POST first, then PATCH.
+- Make the correction conditional: read `entityVersion` off `GET .../jobs/{agenticJobId}` (or off the response of the POST/PATCH you just made) and send it as `expectedEntityVersion`. A `409` then means someone else amended the outcome after you read it: refetch, re-check what you are about to overwrite (`GET .../outcome/history`), and only then re-apply with the new version. Omitting `expectedEntityVersion` stays valid — the amendment is then last-write-wins — so existing integrations are not broken, just unprotected.
 
 **Reading the amendment trail:**
 
@@ -611,6 +636,22 @@ GET https://api.revenium.ai/profitstream/v2/api/jobs/{agenticJobId}/outcome/hist
 ```
 
 Returns the revisions in order: `sequence: 1` is the initial report, `2`+ are amendments. Each revision carries the `executionStatus` / `outcomeType` / `outcomeValue` / `outcomeReason` as of that point, plus `reportedBy`, `reportedAt`, and the revision's `reason` (null on `sequence: 1`). The Job itself also reports `outcomeUpdateCount`, `outcomeUpdatedAt` and `outcomeUpdatedBy`, so you can tell an amended outcome from an original one without fetching the history.
+
+**Outcome metrics** (declared facts beside the single `outcomeValue` — e.g. `quality_rate`, `hours_saved`, `tickets_closed`):
+
+Metric keys are **declared per job type before they can be sent**: `PUT https://api.revenium.ai/profitstream/v2/api/jobs/types/{agenticJobType}/economics?teamId={hashedTeamId}` with the write key, listing each metric's `key`, `type` (`COUNT` | `DURATION` | `PERCENT` | `MONEY` | `SCORE`), `direction` (`HIGHER_IS_BETTER` | `LOWER_IS_BETTER`), `aggregation` (`SUM` | `AVG` | `LAST`) and `resolution` (`PER_JOB` for outcome metrics; `PERIOD` facts are posted to `.../jobs/types/{agenticJobType}/facts` instead). Up to 100 metrics per declaration; economics money is USD only. A Job with no `agenticJobType`, an undeclared key, or a `PERIOD`-resolution key returns `400`. `reported_value` is reserved (it mirrors `outcomeValue`), and `quality_rate` must be between 0 and 1. The Python SDK wraps this as `upsert_job_type_economics()` (`>= 0.8.0`).
+
+Send facts with the outcome (`metrics` on the POST or PATCH above), or append them later when they arrive after the outcome was reported:
+
+```
+POST https://api.revenium.ai/profitstream/v2/api/jobs/{agenticJobId}/outcome/metrics?teamId={hashedTeamId}
+Body: a bare JSON array, not an object — at most 200 entries, unique keys
+  [
+    { "key": "hours_saved", "value": 3.5, "provenance": "SELF_REPORTED", "source": "crm-sync" }
+  ]
+```
+
+`201` on success, `404` if the Job does not exist yet. Each entry also accepts `recordedBy`, `reason` (required when the entry replaces a value the Job already has) and `recordedAt` (not in the future, not older than a year). Facts are append-only: replacing one deactivates the old value, it is never deleted.
 
 Option C — **via Dashboard UI** (for manual reporting or testing):
 1. Go to https://app.revenium.ai/costs-revenue/roi-dashboard
@@ -626,16 +667,16 @@ Every authenticated request maps to one of three buckets, and the budgets are ve
 
 | Bucket | Paths | Limit |
 |---|---|---|
-| `metering` | `/meter/v2/**` — the AI/tool/event ingestion calls | 1,000 req/sec |
-| `platform` | `/profitstream/v2/api/**` — Jobs, outcomes, `/users/me`, everything else | 50 req/sec |
-| `analytics` | metrics, traces, chart and cost-attribution reads | 100 req/sec |
+| `metering` | `/meter/v2/**` — the AI/tool/event ingestion calls | 100 req/sec **per API key** (raised per tenant on request) |
+| `platform` | `/profitstream/v2/api/**` — Jobs, outcomes, `/users/me`, everything else | 50 req/sec per account |
+| `analytics` | `/profitstream/v2/api/sources/metrics/**`, `/billing/**`, `/reports/**`, `/coding-assistant/**` | 100 req/sec per account |
 
-Limits are **per account**, not per key, so every key in the account shares the budget. Four headers come back on every authenticated response regardless of status: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (unix seconds) and `X-RateLimit-Bucket`. Throttle on `Remaining` before you hit zero rather than waiting for the `429`.
+Platform and analytics limits are **per account**, so every key in the account shares them; the metering limit is per key. Four headers come back on every authenticated response regardless of status: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (unix seconds) and `X-RateLimit-Bucket`. Throttle on `Remaining` before you hit zero rather than waiting for the `429`.
 
 A `429` adds `Retry-After` (integer seconds, always present) and `X-RateLimit-Limited-Reason`, which is the field that tells you what to actually do:
 
 - `bucket-rate` — you are sending too fast. Honour `Retry-After`, then back off exponentially **with jitter** so concurrent workers in the same account don't retry in lockstep.
-- `error-pattern` — you are sending *broken* requests. Sustained 4xx over a short window triggers a temporary block whose cooldown **doubles with each violation, up to one hour**. Retrying harder makes it worse; fix the request (auth, missing required fields, wrong Job ID) and the cooldown clears itself.
+- `error-pattern` — you are sending *broken* requests. Twenty responses with status 401, 403, 404 or 405 within five minutes trigger a block of 30 seconds whose cooldown **doubles with each violation, up to one hour**. Retrying harder makes it worse; fix the request (auth, missing required fields, wrong Job ID) and the cooldown clears itself.
 
 Full reference: https://docs.revenium.io/integrations/rate-limits.md. This is the reason the outcome-`404` retry above must be a backoff and not a loop: a tight retry on a Job that hasn't materialized yet is exactly the sustained-4xx pattern the limiter is built to stop, and the penalty then lands on your metering traffic too.
 
@@ -645,7 +686,7 @@ Every REST metering POST accepts a Stripe-style `Idempotency-Key` header (1–25
 
 - The fingerprint is `(method, path, body)`. If your retry rebuilds the payload with a fresh timestamp or a new `transactionId`, you get `409 idempotency_key_mismatch` — build the body **once** and resend the same bytes.
 - A concurrent retry while the first call is still in flight returns `409 idempotency_key_in_progress` with `Retry-After: 1`.
-- A malformed key returns `400 invalid_idempotency_key`.
+- A malformed key returns `400 invalid_idempotency_key`; a body over 1 MiB returns `413 payload_too_large`.
 - Persist the key alongside your retry state; a retry from another process or after a restart needs the original key to benefit at all.
 
 The header is opt-in and requests without it behave exactly as before. OTLP endpoints are not covered. Full reference: https://docs.revenium.io/integrations/idempotency.md.
@@ -682,7 +723,7 @@ The header is opt-in and requests without it behave exactly as before. OTLP endp
 | File | Purpose |
 |------|---------|
 | `revenium-metering-design.json` | Metering model config (org, products, agents, task types). **Read this file when instrumenting new files later** — it contains the project's established metering patterns. |
-| `revenium_config.py` or `src/revenium-config.ts` | Helper with `create_usage_metadata()` function |
+| `revenium_config.py`, `src/revenium-config.ts` or `revenium/config.go` | Helper that builds the usage metadata (`create_usage_metadata()` / `createUsageMetadata()` / `revenium.WithUsageMetadata(ctx, ...)`) |
 | `.revvy-backup` files | Backup of every modified source file |
 | `.github/workflows/revenium-check.yml` | GitHub Action running `revvy check --warn-only` on PRs (annotations only — remove `--warn-only` to enforce blocking once instrumentation is complete) |
 | `.{cursor,claude,gemini,codex}/rules/revenium.md` | Instrumentation rules for AI coding tools |
@@ -741,7 +782,7 @@ def chat(message):
 from openai import OpenAI
 from flask import g                              # or however your app exposes
                                                  # the authenticated user
-import revenium_middleware.openai.middleware     # Add this line
+import revenium_middleware.openai     # Add this line
 
 client = OpenAI()
 
@@ -798,7 +839,7 @@ async function summarize(text: string) {
 }
 ```
 
-Note: For Node.js OpenAI, the pattern is different — it uses a client wrapper (`GetClient()`) instead of monkey-patching. Revvy adds a TODO comment explaining the refactor needed.
+Note: For Node.js OpenAI, Perplexity and fal.ai the pattern is a client wrapper (`Initialize()` + `GetClient()`) instead of monkey-patching, and Google GenAI / Vertex AI use a controller. Only Anthropic auto-patches on import. Revvy adds a TODO comment explaining the refactor needed.
 
 ---
 
@@ -825,12 +866,14 @@ When running `npx @revenium/revvy` without `--non-interactive`, the wizard goes 
 
 | Provider | Import to add | Metadata |
 |----------|--------------|----------|
-| OpenAI | `import revenium_middleware.openai.middleware` | `usage_metadata={}` in `.create()` |
+| OpenAI | `import revenium_middleware.openai` | `usage_metadata={}` in `.create()` |
 | Anthropic | `import revenium_middleware.anthropic` | `usage_metadata={}` in `.create()` |
 | Ollama | `import revenium_middleware.ollama` | `usage_metadata={}` in `ollama.chat()` |
 | LiteLLM | `import revenium_middleware.litellm.client.middleware` | `usage_metadata={}` in `litellm.completion()` |
 | Perplexity | `import revenium_middleware.perplexity` | Uses OpenAI client pointed at api.perplexity.ai |
-| Google GenAI / Vertex | `import revenium_middleware.google` | `usage_metadata={}` in `.generate_content()` |
+| Google GenAI / Vertex | `import revenium_middleware.google` | `usage_metadata={}` in `.generate_content()` (Vertex: the same call on `genai.Client(vertexai=True)`) |
+| fal.ai | `import revenium_middleware.fal` | `usage_metadata={}` in `fal_client.run()` / `subscribe()` / `stream()` / `submit()` |
+| LangChain | `from revenium_middleware.openai.langchain import wrap, attach_to` | `attach_to(llm, usage_metadata={...})` once at startup; per-request identity via `@revenium_metadata(...)` on the function that calls the model |
 
 ### Node.js/TypeScript
 
@@ -838,13 +881,19 @@ When running `npx @revenium/revvy` without `--non-interactive`, the wizard goes 
 |----------|--------------|---------|
 | OpenAI | `import { Initialize, GetClient } from "@revenium/middleware/openai"` | Client wrapper — replace `new OpenAI()` with `GetClient()` |
 | Anthropic | `import "@revenium/middleware/anthropic"` | Auto-patches — add `usageMetadata` in `.create()` params |
-| Google GenAI | `import "@revenium/middleware/google/genai"` | Auto-patches — add `usageMetadata` in `.generateContent()` |
-| Vertex AI | `import "@revenium/middleware/google/vertex"` | Auto-patches — add `usageMetadata` in `.generateContent()` |
-| Perplexity | `import "@revenium/middleware/perplexity"` | Auto-patches OpenAI client for Perplexity models |
+| Google GenAI | `import { GoogleGenAIController } from "@revenium/middleware/google/genai"` | Controller wrapper — `new GoogleGenAIController().createChat(prompts, model, usageMetadata)`; metadata is the third argument |
+| Vertex AI | `import { VertexAIController } from "@revenium/middleware/google/vertex"` | Same controller pattern — `createChat(prompts, model, usageMetadata, projectId?, location?)`; metadata stays third, before `projectId` / `location` |
+| Perplexity | `import { Initialize, GetClient } from "@revenium/middleware/perplexity"` | Client wrapper — same method-chain shape as OpenAI |
+| LiteLLM proxy | `import { initialize } from "@revenium/middleware/litellm"` | `initialize()` patches `fetch`; attribution travels as `x-revenium-*` headers on the proxy call |
+| fal.ai | `import { Initialize, GetClient } from "@revenium/middleware/fal"` | Client wrapper — metadata is the trailing argument of `run` / `subscribe` / `stream` |
 
-**Detected but not auto-instrumented.** revvy's detection is deliberately wider than its transforms: it also flags **LangChain** (`langchain`, `langchain-openai`, `langchain-anthropic`, `@langchain/*`), **fal.ai** (`fal-client`, `@fal-ai/client`) and **Go** provider SDKs, none of which have an automatic transform. Those show up as `Skipped [provider]: no transform` — expected output, not a failure. Wire them by hand: Python and Node use the tables above; Go has its own middleware packages (`github.com/revenium/revenium-middleware-{openai,anthropic,google,fal,runway}-go`) which revvy detects but cannot install or wire for you.
+There is no bare `@revenium/middleware/google` subpath, and no `@revenium/openai` / `@revenium/anthropic` packages any more (both are deprecated on npm in favour of `@revenium/middleware`). Azure OpenAI is detected inside the OpenAI wrapper; Bedrock, Foundry and Vertex Claude are detected inside the Anthropic patch from the client `baseURL`. Since `2.0.0` the Node SDK loads `.env.local` and `.env` from the working directory itself.
 
-**Python extras.** Install only the providers in use — the extra names are `openai`, `anthropic`, `google-genai`, `google-vertex`, `litellm`, `litellm-proxy`, `ollama`, `perplexity-openai`, `fal`, `langchain`, and they combine: `pip install "revenium-python-sdk[openai,anthropic,langchain]"`.
+**Detected but not auto-instrumented.** revvy's detection is deliberately wider than its transforms: it also flags **LangChain** (`langchain`, `langchain-openai`, `langchain-anthropic`, `@langchain/*`), **fal.ai** (`fal-client`, `@fal-ai/client`), **Vercel AI SDK**, **AWS Bedrock** and **Go** provider SDKs, none of which have an automatic transform. Those show up as `Skipped [provider]: no transform` — expected output, not a failure. Wire them by hand: Python and Node use the tables above.
+
+**Go** is metered by the multi-module `github.com/revenium/revenium-go-sdk` (`v1.1.9`): one module per provider — `/openai` (also Azure and xAI), `/anthropic` (also Bedrock), `/google` (also Vertex), `/perplexity`, `/litellm`, `/ollama`, `/groq`, `/grok`, `/fal`, `/runway` — plus `/core/jobs` for outcomes. The pattern is `if err := Initialize(opts...); err != nil { ... }`, then `client, err := GetClient()` and `defer client.Close()`, with per-call metadata through the context: `core.WithUsageMetadata(ctx, map[string]interface{}{"organizationName": ..., "taskType": ...})` (fal and Runway also accept a trailing metadata argument; context wins). The wrapped client exposes method chains (`client.Chat().Completions().New(ctx, params)`, `client.Messages().CreateMessage(ctx, params)`, `client.Models().GenerateContent(...)`), so a project on the raw upstream SDK (`openai/openai-go/v3`, `anthropics/anthropic-sdk-go`, `google.golang.org/genai`) is migrated to the wrapped client rather than patched; `sashabaranov/go-openai`, `cloud.google.com/go/vertexai` and `fal-go` are detected but not wrapped. The old `github.com/revenium/revenium-middleware-*-go` modules are deprecated and redirect here. Go floors: `openai`/`perplexity` need Go 1.25, `anthropic`/`google` 1.24, `litellm`/`ollama` 1.22, the rest 1.21. `Initialize()` reads `.env.local` and `.env` from the working directory (`REVENIUM_ENV_FILES_DISABLE=true` turns that off).
+
+**Python extras.** Install only the providers in use — the extra names are `openai`, `anthropic`, `google`, `google-genai`, `google-vertex`, `litellm`, `litellm-proxy`, `ollama`, `perplexity`, `perplexity-openai`, `perplexity-native`, `fal`, `langchain`, `griptape`, and they combine: `pip install "revenium-python-sdk[openai,anthropic,langchain]"`.
 
 ---
 
@@ -863,7 +912,8 @@ The ingestion API accepts a broad set of fields, but **per-SDK + per-provider su
 | `traceId` | **YOU set, per workflow run** | Correlates multiple AI calls in one end-to-end workflow — see "AI Outcomes Strategy". |
 | `agenticJobId` | **YOU set, per Job** | Identifies the Job (the unit of work tied to a business outcome — customer-facing name is **AI Outcomes**). |
 | `agenticJobName` | YOU set, per Job | Human-readable display name for the Job. |
-| `ticketId` | **YOU set, per call** | External ticket or issue ID this work belongs to (`JIRA-123`, `LINEAR-456`) — attributes the call's cost to a ticket. Max 256 chars. Requires `@revenium/middleware >= 1.1.9` or `revenium-python-sdk >= 0.6.0`; env fallback `REVENIUM_TICKET_ID`. |
+| `agentVersion` | agent-names, per release | Version of the agent that produced this call, max 64 chars. Distinct from the Job-level `agenticJobVersion`. Per-SDK support varies — see the matrix below. |
+| `ticketId` | **YOU set, per call** | External ticket or issue ID this work belongs to (`JIRA-123`, `LINEAR-456`) — attributes the call's cost to a ticket. Max 256 chars. Requires `@revenium/middleware >= 1.1.9`, `revenium-python-sdk >= 0.4.0` or `revenium-go-sdk >= 1.1.7`; env fallback `REVENIUM_TICKET_ID` on all three. |
 | `model` | Auto-captured | gpt-4o, claude-3, gemini, etc. |
 | `inputTokenCount` | Auto-captured | Input tokens |
 | `outputTokenCount` | Auto-captured | Output tokens |
@@ -871,39 +921,36 @@ The ingestion API accepts a broad set of fields, but **per-SDK + per-provider su
 | `totalCost` | Auto-captured | Estimated cost |
 | `requestDuration` | Auto-captured | Latency in ms |
 
-> **`organizationName` and `productName` are normally auto-created** on first sight, which is why instrumentation "just works" against a fresh account. An account can opt into **strict ingestion mode**, and then it doesn't: a payload naming an organization, product, subscriber, credential or subscription that doesn't already exist is **not ingested** — it is held as an ingestion failure with a named reason (`Product not found`, `Organization name/ID mismatch`, …), reviewable and resubmittable for 30 days before it is deleted. If metering returns 2xx and nothing shows up in the dashboard, check that list before debugging the code: the payload is fine, the referenced object just doesn't exist yet.
+> **`organizationName` and `productName` are normally auto-created** on first sight, which is why instrumentation "just works" against a fresh account. An account can opt into **strict ingestion mode** (`PATCH /profitstream/v2/api/tenants/{tenantId}/strict-ingestion-mode`), and then it doesn't: a payload that *names* an organization, product, subscriber, credential or subscription that doesn't already exist is rejected with `422` and a structured code (`CONSUMING_ORG_NOT_FOUND`, `PRODUCT_NOT_FOUND`, `SUBSCRIBER_NOT_FOUND`, `*_NAME_ID_MISMATCH`, …), and the rejected transactions are listed at `GET /profitstream/v2/api/tenants/{tenantId}/ingestion-failures` for 30 days. There is no replay: create the missing object (or fix the name) and send the transaction again. A reference the payload leaves out still falls through to the default behaviour.
 
 ### Per-SDK + per-provider extras (verify against your installed SDK version)
 
-The fields below are accepted by the ingestion API but are NOT uniformly exposed across SDK + provider combinations. Verified against `@revenium/middleware@1.1.10` (typed `UsageMetadata`) and `revenium-python-sdk@0.6.0`. **Before promising any of these to a developer**, check the SDK version they have installed and the typed `UsageMetadata` interface that ships with it — a field the installed version doesn't know is silently dropped, and on the Node Anthropic path an unknown `usageMetadata` key can fail the provider call outright.
+The fields below are accepted by the ingestion API but are NOT uniformly exposed across SDKs. Verified against `@revenium/middleware@2.0.0` (typed `UsageMetadata`), `revenium-python-sdk@0.12.0` and `revenium-go-sdk@1.1.9`. **Before promising any of these to a developer**, check the SDK version they have installed and the typed `UsageMetadata` interface that ships with it — a field the installed version doesn't know is silently dropped, and on the Node Anthropic path an unknown `usageMetadata` key can fail the provider call outright.
 
-Legend: ✅ per-call settable · ⚠ env-var only (process-wide, not per-call — fine for single-tenant batch jobs, surprising in serverless with concurrent requests) · ❌ not yet supported
+Legend: ✅ per-call settable · ❌ not yet supported (the SDK drops the key before it reaches the wire)
 
-| Field | Node Anthropic | Node Google GenAI / Vertex | Node OpenAI | Python (all providers) |
-|---|:---:|:---:|:---:|:---:|
-| `retryNumber` | ⚠ env-var | ✅ | ✅ | ✅ |
-| `environment` | ⚠ env-var | ✅ | ✅ | ✅ |
-| `region` | ⚠ env-var | ✅ | ✅ | ✅ |
-| `parentTransactionId` | ⚠ env-var | ✅ | ✅ | ✅ |
-| `transactionName` | ⚠ env-var | ✅ | ✅ | ✅ |
-| `traceType` / `traceName` | ⚠ env-var | ✅ | ✅ | ✅ |
-| `errorCode` | ❌ | ❌ | ❌ | ✅ (`>= 0.6.0`) |
-| `billingSkipped` / `skipReason` | ❌ | ❌ | ❌ | ✅ (`>= 0.6.0`) |
-| `pricingTier` (STANDARD / BATCH) | ❌ | ❌ | ❌ | ❌ |
-| `subscriptionTier` | ❌ | ❌ | ❌ | ❌ |
-| `skillName` and the five other `skill*` fields (see below) | ❌ | ❌ | ❌ | ✅ (`>= 0.6.0`) |
+| Field | Node (all providers) | Python (all providers) | Go (all providers) |
+|---|:---:|:---:|:---:|
+| `retryNumber`, `environment`, `region`, `parentTransactionId`, `transactionName`, `traceType` / `traceName` | ✅ | ✅ | ✅ |
+| `pricingTier` (STANDARD / BATCH) | ❌ | ✅ | ✅ |
+| `subscriptionTier` | ❌ | ✅ | ✅ |
+| `skillName` and the five other `skill*` fields (see below) | ✅ (`>= 1.2.0`) | ✅ (`>= 0.6.0`) | ✅ |
+| `agentVersion` | ❌ | ✅ (`>= 0.8.0`) | ✅ |
+| `subagentType` | ❌ | ✅ (`>= 0.9.0`) | ✅ |
+| `effort`, `clientSurface`, `entrypoint` | ❌ | ✅ (`0.7.0` / `0.10.0` / `0.11.0`) | ✅ |
+
+On Node, an `agentVersion` or `subagentType` is reachable today only through the direct metering call above; the Go SDK forwards both. `errorCode`, `billingSkipped` and `skipReason` are written by the SDKs themselves when a provider call fails — they are not user metadata in any SDK, so do not teach them.
 
 **How to use this table when advising a developer:**
 
-1. If the field is ✅ in their SDK + provider combo, recommend it directly.
-2. If the field is ⚠ env-var-only, surface the tradeoff explicitly: "*This works today, but only at process granularity — every concurrent request in this Lambda will get the same value. If that's fine for your use case, set `REVENIUM_<FIELD>=...` in your env. If you need per-call settability, this isn't currently supported in the Node Anthropic SDK.*"
-3. If the field is ❌, don't promise it. The API accepts it; today's SDKs don't expose it.
+1. If the field is ✅ in their SDK, recommend it directly.
+2. If the field is ❌, don't promise it. The API accepts it; that SDK doesn't expose it.
 
-This matrix shifts as SDK releases land — the Python SDK moved from `0.1.x` to `0.6.0` while this guide sat unmaintained, which is what turned the `errorCode` / `billingSkipped` / `skill*` rows from ❌ into ✅. If the developer is on a newer version than the ones named above, re-check the typed interface rather than trusting this table.
+This matrix shifts as SDK releases land — between `@revenium/middleware@1.1.10` / `revenium-python-sdk@0.6.0` and the versions above, the Node Anthropic path gained per-call metadata and Node gained the `skill*` fields. If the developer is on a newer version than the ones named above, re-check the typed interface rather than trusting this table.
 
-### Skill attribution (Python SDK only, `>= 0.6.0`)
+### Skill attribution (Python `>= 0.6.0`, Node `>= 1.2.0`)
 
-Six fields attribute a call to the **named skill** that produced it, for agents that dispatch discrete skills or workflows rather than making undifferentiated model calls. Skip the whole cluster if the app has no such concept — that is the common case, and a half-filled skill record is worse than none. `@revenium/middleware` does not expose these per-call as of `1.1.10`; the Python SDK accepts each one either in `usage_metadata` (snake_case or camelCase) or via the matching `REVENIUM_SKILL_*` env var.
+Six fields attribute a call to the **named skill** that produced it, for agents that dispatch discrete skills or workflows rather than making undifferentiated model calls. Skip the whole cluster if the app has no such concept — that is the common case, and a half-filled skill record is worse than none. Both SDKs accept each one in the usage metadata in snake_case or camelCase; the Python SDK also reads the matching `REVENIUM_SKILL_*` env var.
 
 | Field | Accepted values | Notes |
 |---|---|---|
@@ -912,7 +959,7 @@ Six fields attribute a call to the **named skill** that produced it, for agents 
 | `skill_kind` | `workflow` | Only meaningful for workflow skills; omit otherwise. |
 | `skill_plugin_name` | free-form, max 256 | The plugin providing the skill. Only set when `skill_source` is `plugin`. |
 | `skill_marketplace_name` | free-form, max 256 | Where the plugin was installed from. |
-| `skill_invocation_trigger` | max **32** chars; commonly `user-slash`, `claude-proactive`, `nested-skill` | What triggered the invocation. Separates user-invoked from proactive usage. The 32-char cap is much tighter than the others — a longer value is truncated. |
+| `skill_invocation_trigger` | max **32** chars; commonly `user-slash`, `claude-proactive`, `nested-skill` | What triggered the invocation. Separates user-invoked from proactive usage. The 32-char cap is much tighter than the others — the API does not reject a longer value, but the store holds 32 characters, so keep it short. |
 
 ---
 
@@ -967,15 +1014,16 @@ npx @revenium/revvy check
 | `Skipped [provider]: no transform` | Provider not yet supported | Add middleware import manually (see Middleware Patterns) |
 | Check shows wrapped but metering not appearing | SDK not installed or API key not set | Install revenium-python-sdk/`@revenium/middleware` and set REVENIUM_METERING_API_KEY |
 | Anthropic returns `400: "usageMetadata: Extra inputs are not permitted"` | App was launched under `tsx` — middleware silently failed to patch | Run via the production entry point (Vite/Next.js dev server, compiled `tsc`+`node`, or `vitest`). `tsx` is not supported. |
-| 403 on outcome POST | Using metering key (`rev_mk_*`) instead of write key | Outcome API requires `rev_sk_*` write key — add `REVENIUM_API_KEY` to `.env` |
+| 403 on outcome POST | Using metering key (`rev_mk_*`) instead of write key | Outcome API requires a `rev_sk_*` write key: Python reads `REVENIUM_WRITE_API_KEY`; Node reads the same variable, so only the process that reports outcomes runs on the write key (`REVENIUM_METERING_API_KEY=rev_sk_...`) and the rest keep `rev_mk_*`; Go passes it to `jobs.NewJobClient` |
 | `400 Invalid JSON format` on outcome POST | Missing required `executionStatus` field | Add `executionStatus: "SUCCESS" \| "FAILED" \| "CANCELLED"` to the body |
 | `outcomeValue` not appearing in dashboard | Used `monetaryValue` instead | Field is `outcomeValue`. `monetaryValue` returns 200 and records `outcomeValue: null`. Correct it in place: `PATCH .../jobs/{agenticJobId}/outcome` with the right `outcomeValue` plus a `reason`. Keep the same `agenticJobId`. |
-| `404` on outcome POST | Job not yet ingested (async metering pipeline) | Retry with exponential backoff honouring `Retry-After` (the SDKs allow up to 10 attempts, 2s → 90s). Never in a tight loop — repeated 404s trip the error-pattern limiter. |
+| `404` on outcome POST | Job not yet ingested (async metering pipeline) | Retry with exponential backoff honouring `Retry-After` (the Python SDK does it itself, up to 10 attempts, 2s → 90s; Node and Go do not retry a 404 — back off yourself). Never in a tight loop — repeated 404s trip the error-pattern limiter. |
 | `429` on any call | Bucket budget exhausted, or the error-pattern limiter fired | Wait `Retry-After` seconds, then back off with jitter. Check `X-RateLimit-Limited-Reason`: `bucket-rate` means slow down, `error-pattern` means fix the request shape. |
-| Metering returns 2xx but nothing appears in the dashboard | The account may have **strict ingestion mode** on | With strict ingestion on, a payload naming an unknown organization/product/subscriber is held as an ingestion failure instead of auto-creating it. Check the account's ingestion-failures list, create the missing object (or fix the name), and resubmit. Held records are dropped after 30 days. |
-| `409` on outcome POST | An outcome is already reported for this Job | Not a dead end. If the first report was right, treat as success. If it was wrong, `PATCH .../jobs/{agenticJobId}/outcome` (requires `reason`); `GET .../outcome/history` shows what was recorded. |
-| `422` on outcome PATCH | No outcome reported yet, or `reason` was blank | POST the outcome first — PATCH only amends an existing one. Always send a non-blank `reason`. |
-| `409` on outcome PATCH | Concurrent update detected | Refetch the Job (`GET .../jobs/{agenticJobId}`) and retry the amendment. |
+| Metering returns `422` with a code like `CONSUMING_ORG_NOT_FOUND` | The account has **strict ingestion mode** on | The payload names an organization/product/subscriber that doesn't exist yet. Check `GET .../tenants/{tenantId}/ingestion-failures`, create the missing object (or fix the name), and send the transaction again — rejected records are listed for 30 days and are not replayed. |
+| `409` on outcome POST | An outcome is already reported for this Job | Not a dead end. If the first report was right, treat as success (the Node SDK throws `OutcomeAlreadyReportedError` here from `1.2.0`). If it was wrong, `PATCH .../jobs/{agenticJobId}/outcome` with a `reason`; `GET .../outcome/history` shows what was recorded. |
+| `422` on outcome PATCH | No outcome reported yet (or, for a dashboard session, a blank `reason`) | POST the outcome first — PATCH only amends an existing one. API-key callers may omit `reason`, but a real one is the only useful audit entry. |
+| `409` on outcome PATCH | `expectedEntityVersion` is stale — someone amended the outcome after you read it | Refetch the Job, re-check the outcome history, then re-apply with the new `entityVersion`. Never retry blindly: an amendment is not idempotent. |
+| `400` on outcome metrics | Job has no `agenticJobType`, the metric key is not declared `PER_JOB` for that type, or the key is the reserved `reported_value` | Declare it with `PUT .../jobs/types/{agenticJobType}/economics` first. |
 
 ---
 
@@ -998,7 +1046,7 @@ npx @revenium/revvy check
    - Python: `pip install "revenium-python-sdk[openai,anthropic]" python-dotenv`
    - Node: `npm install @revenium/middleware dotenv`
 
-2. **Set the API key** in `.env` or environment: `REVENIUM_METERING_API_KEY=<your-key>` — get it at https://app.revenium.ai/connections/sdk-setup
+2. **Set the API key** in `.env` or environment: `REVENIUM_METERING_API_KEY=<your-key>` — get it at https://app.revenium.ai/connections/sdk-setup. The Node (`>= 2.0.0`) and Go (`>= 1.1.9`) SDKs read `.env.local` and `.env` from the working directory themselves; Python needs `python-dotenv` (or an exported variable).
 
 3. **Run the app** — metering flows automatically
 
