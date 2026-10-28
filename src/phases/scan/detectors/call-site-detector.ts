@@ -190,8 +190,10 @@ function regexFindCallSites({
   const raw: RawMatch[] = [];
 
   for (const provider of patterns) {
-    // skip provider entirely if its package isn't imported in this file.
-    if (!hasAnyImport(provider.packageNames, importsOfFile)) continue;
+    if (
+      !hasAnyImport(provider.packageNames, importsOfFile) &&
+      !hasAnyImport(provider.instrumentationImports, importsOfFile)
+    ) continue;
 
     for (const cp of provider.callPatterns) {
       const regex = buildMethodRegex(cp.methodChain);

@@ -20,7 +20,6 @@ export const PYTHON_PATTERNS: ProviderPattern[] = [
     ],
     instrumentationImports: [
       "revenium_middleware.openai",
-      "revenium_middleware_openai",
     ],
   },
   {
@@ -35,7 +34,6 @@ export const PYTHON_PATTERNS: ProviderPattern[] = [
     ],
     instrumentationImports: [
       "revenium_middleware.anthropic",
-      "revenium_middleware_anthropic",
     ],
   },
   {
@@ -141,6 +139,23 @@ export const PYTHON_PATTERNS: ProviderPattern[] = [
       { methodChain: "batch", operationType: "chat" },
     ],
     instrumentationImports: [],
+  },
+  {
+    provider: "fal-ai",
+    displayName: "fal.ai",
+    packageNames: ["fal_client", "fal-client"],
+    language: "python",
+    callPatterns: [
+      { methodChain: "fal_client.run", operationType: "image" },
+      { methodChain: "fal_client.run_async", operationType: "image" },
+      { methodChain: "fal_client.subscribe", operationType: "image" },
+      { methodChain: "fal_client.subscribe_async", operationType: "image" },
+      { methodChain: "fal_client.stream", operationType: "image" },
+      { methodChain: "fal_client.stream_async", operationType: "image" },
+      { methodChain: "fal_client.submit", operationType: "image" },
+      { methodChain: "fal_client.submit_async", operationType: "image" },
+    ],
+    instrumentationImports: ["revenium_middleware.fal"],
   },
   {
     provider: "crewai",

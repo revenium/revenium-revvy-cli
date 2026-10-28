@@ -1,4 +1,5 @@
 import { join } from "path";
+import { configHelperFileName } from "../config-helper.js";
 import { writeFile } from "fs/promises";
 import type { InstrumentationResult } from "../../instrument/instrumenter.js";
 import { getDesignFilename } from "./design-writer.js";
@@ -50,7 +51,7 @@ export function buildModifiedFilesManifest(args: ModifiedFilesManifestArgs): Mod
     // Reflect that here so the manifest doesn't claim files exist that don't.
     generatedFiles.push(getMonorepoTodoFilename());
   } else {
-    generatedFiles.push(language === "python" ? "revenium_config.py" : "src/revenium-config.ts");
+    generatedFiles.push(configHelperFileName(language));
     if (envCreated) generatedFiles.push(".env");
   }
 

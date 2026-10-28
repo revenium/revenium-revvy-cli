@@ -20,10 +20,7 @@ export function transformPythonAnthropic(
   const changes: string[] = [];
   let result = content;
 
-  if (
-    hasImport(result, "revenium_middleware.anthropic") ||
-    hasImport(result, "revenium_middleware_anthropic")
-  ) {
+  if (hasImport(result, "revenium_middleware.anthropic")) {
     return {
       content: result,
       modified: false,

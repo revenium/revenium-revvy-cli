@@ -9,6 +9,7 @@ import type { BillingProvidersResult } from "../../types/revvy-state.js";
 import {
   BILLING_PROVIDERS,
   getProviderSyncMetadata,
+  DAILY_REFRESH_NOTE,
 } from "../../constants/billingProviders.js";
 import {
   REVENIUM_DASHBOARD_URL,
@@ -285,7 +286,8 @@ export function BillingProviders({
                     status="success"
                   />
                   <Text dimColor>
-                    {"    "}Data sync started. {sync.historicalSyncMessage}
+                    {"    "}Data sync started. {sync.historicalSyncMessage}{" "}
+                    {DAILY_REFRESH_NOTE}
                   </Text>
                 </Box>
               );

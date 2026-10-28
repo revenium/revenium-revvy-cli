@@ -12,12 +12,10 @@ import { join } from "path";
 import { writeFile } from "fs/promises";
 import type { MeteringDesign } from "../../types/metering-design.js";
 import type { PackageManagerInfo } from "../../utils/package-manager.js";
-import { renderTemplate } from "../../utils/template-engine.js";
 import { buildEnvContent } from "../../utils/env-helpers.js";
 import { getInstallCommand } from "../instrument/instrumenter.js";
 
-import nodeTemplate from "../generate/templates/node-ts/revenium-config.ts.ejs";
-import pythonTemplate from "../generate/templates/python/revenium_config.py.ejs";
+import { configHelperFileName, renderConfigHelper } from "../generate/config-helper.js";
 
 interface MonorepoTodoArgs {
   targetDir: string;
@@ -45,19 +43,16 @@ export function buildMonorepoTodoContent(
   pmInfo: PackageManagerInfo,
   apiKey: string,
 ): string {
-  const isPython = design.detectedLanguage === "python";
-  const helperFilename = isPython ? "revenium_config.py" : "revenium-config.ts";
-  const template = isPython ? pythonTemplate : nodeTemplate;
-  const helperContent = renderTemplate(template, {
-    providers: design.detectedProviders,
-    organization: design.organization,
-    products: design.products,
-    agents: design.agents,
-    taskTypes: design.taskTypes,
-    trackingGoal: design.trackingGoal,
-    outcomeTracking: design.outcomeTracking,
-    centralizedCallPattern: design.centralizedCallPattern,
-  });
+  const language = design.detectedLanguage;
+  const isPython = language === "python";
+  const codeFence = isPython ? "python" : language === "go" ? "go" : "typescript";
+  const helperImportHint = isPython
+    ? "from revenium_config import create_usage_metadata"
+    : language === "go"
+      ? 'import revenium "<module>/revenium"'
+      : 'import { createUsageMetadata } from "../path/to/revenium-config.js";';
+  const helperFilename = configHelperFileName(language).split("/").pop()!;
+  const helperContent = renderConfigHelper(design);
 
   // Redact the API key in the env block — the real .env should be written
   // by the agent, but the example shouldn't paste a live key into a markdown
@@ -81,7 +76,7 @@ You (or your AI coding agent) need to place these files at the right locations. 
 
 The helper should live in whichever workspace package owns the AI call sites — for example \`packages/ai/src/${helperFilename}\` or \`apps/web/src/${helperFilename}\`. Pick the file that's closest to where your \`.create()\` calls live and that other files can import from.
 
-\`\`\`${isPython ? "python" : "typescript"}
+\`\`\`${codeFence}
 ${helperContent.trimEnd()}
 \`\`\`
 
@@ -123,8 +118,8 @@ Replace \`<runtime-package-name>\` with the workspace package name from its \`pa
 
 After placing the helper, update the import path in every modified source file so it resolves to wherever you placed it:
 
-\`\`\`${isPython ? "python" : "typescript"}
-${isPython ? "from revenium_config import create_usage_metadata" : 'import { createUsageMetadata } from "../path/to/revenium-config.js";'}
+\`\`\`${codeFence}
+${helperImportHint}
 \`\`\`
 
 Revvy's transforms left a default import path of \`./revenium-config\` (Node) or \`revenium_config\` (Python). Adjust it to match the actual placement you chose.

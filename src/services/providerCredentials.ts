@@ -81,14 +81,14 @@ export async function createProviderCredential({
     }
 
     const details = body?.details as Record<string, unknown> | undefined;
-    const detailError = details?.error ? String(details.error) : undefined;
+    const detailError = details?.error
+      ? String(details.error)
+      : details?.["Invalid request"]
+        ? String(details["Invalid request"])
+        : undefined;
     const detail =
       detailError ??
-      (body?.message
-        ? String(body.message)
-        : response.status === 409
-          ? "A credential for this provider already exists."
-          : `HTTP ${response.status}`);
+      (body?.message ? String(body.message) : `HTTP ${response.status}`);
 
     return { ok: false, status: response.status, error: detail };
   } catch (error) {

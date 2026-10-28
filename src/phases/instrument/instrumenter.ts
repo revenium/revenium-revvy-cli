@@ -11,6 +11,7 @@ import type { ScanResult, CallSite } from "../../types/scan-result.js";
 import type { MeteringDesign } from "../../types/metering-design.js";
 import type { PackageManagerInfo } from "../../utils/package-manager.js";
 import { installCommand as buildInstallVerb } from "../../utils/package-manager.js";
+import { GO_PATTERNS } from "../scan/patterns/go-patterns.js";
 import type { TransformContext } from "./transforms/index.js";
 import { isPythonPerplexityFile, isNodePerplexityFile } from "./transforms/index.js";
 import { getTransform } from "./constants/transform-registry.js";
@@ -218,7 +219,6 @@ export async function instrumentCallSites(
     try {
       const originalContent = await readFile(absolutePath, "utf-8");
       const backupPath = absolutePath + ".revvy-backup";
-      await copyFile(absolutePath, backupPath);
 
       let content = originalContent;
       const allChanges: string[] = [];
@@ -250,6 +250,7 @@ export async function instrumentCallSites(
       }
 
       if (content !== originalContent) {
+        await copyFile(absolutePath, backupPath);
         await writeFile(absolutePath, content, "utf-8");
         result.filesModified++;
         result.totalChanges += allChanges.length;
@@ -305,6 +306,7 @@ export function getInstallCommand(design: MeteringDesign, pmInfo?: PackageManage
     if (providers.includes("Vertex AI")) {
       peerDeps.push("@google-cloud/vertexai");
     }
+    if (providers.includes("fal.ai")) peerDeps.push("@fal-ai/client");
 
     const manager = pmInfo?.manager ?? "npm";
     const baseCmd = buildInstallVerb(manager, peerDeps);
@@ -324,16 +326,26 @@ export function getInstallCommand(design: MeteringDesign, pmInfo?: PackageManage
     if (providers.includes("Perplexity")) extras.push("perplexity");
     if (
       providers.includes("Google GenAI") ||
-      providers.includes("Google GenAI (legacy)") ||
-      providers.includes("Vertex AI")
+      providers.includes("Google GenAI (legacy)")
     ) {
       extras.push("google-genai");
     }
+    if (providers.includes("Vertex AI")) extras.push("google-vertex");
+    if (providers.includes("fal.ai")) extras.push("fal");
+    if (providers.some((p) => p.startsWith("LangChain"))) extras.push("langchain");
     const extrasFragment = extras.length ? `[${extras.join(",")}]` : "";
     return `pip install "revenium-python-sdk${extrasFragment}" python-dotenv`;
   }
 
-  return "# Go: add revenium middleware modules to go.mod";
+  const goModules = [
+    ...new Set(
+      GO_PATTERNS.filter((p) => providers.includes(p.displayName)).map(
+        (p) => p.installModule ?? p.instrumentationImports[0],
+      ),
+    ),
+  ].filter((m): m is string => Boolean(m));
+  if (goModules.length === 0) return "go get github.com/revenium/revenium-go-sdk/openai";
+  return `go get ${goModules.map((m) => `${m}@latest`).join(" ")}`;
 }
 
 export function generateEnvContent(apiKey?: string): string {

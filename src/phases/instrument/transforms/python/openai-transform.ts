@@ -2,7 +2,7 @@
  * Transform for Python files using the OpenAI SDK.
  *
  * Adds:
- * 1. import revenium_middleware.openai.middleware (auto-patches on import)
+ * 1. import revenium_middleware.openai (auto-patches on import)
  * 2. Commented usage_metadata reference block (developer uncomments what they need)
  *
  * The middleware starts capturing basic metering (tokens, model, cost) on import.
@@ -14,7 +14,7 @@
 import type { TransformContext, TransformResult } from "./base-python-transform.js";
 import { hasImport, insertPythonImport, insertPythonBlock, buildPythonCommentBlock } from "./base-python-transform.js";
 
-const REVENIUM_IMPORT = `import revenium_middleware.openai.middleware  # Revenium: auto-patches OpenAI SDK on import`;
+const REVENIUM_IMPORT = `import revenium_middleware.openai  # Revenium: auto-patches OpenAI SDK on import`;
 
 export function transformPythonOpenAI(
   content: string,
@@ -23,10 +23,7 @@ export function transformPythonOpenAI(
   const changes: string[] = [];
   let result = content;
 
-  if (
-    hasImport(result, "revenium_middleware.openai") ||
-    hasImport(result, "revenium_middleware_openai")
-  ) {
+  if (hasImport(result, "revenium_middleware.openai")) {
     return {
       content: result,
       modified: false,

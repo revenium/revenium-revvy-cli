@@ -8,7 +8,7 @@
 import type { TransformContext, TransformResult } from "./base-node-transform.js";
 import { hasImport, buildNodeCommentBlock, insertNodeBlock } from "./base-node-transform.js";
 
-const REVENIUM_IMPORT = `import "@revenium/middleware/google/vertex"; // Revenium: auto-patches Vertex AI SDK`;
+const REVENIUM_IMPORT = `import { VertexAIController } from "@revenium/middleware/google/vertex"; // Revenium: controller wrapper for Vertex AI`;
 
 export function transformNodeVertexAI(
   content: string,

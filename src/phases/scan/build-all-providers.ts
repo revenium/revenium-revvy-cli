@@ -21,9 +21,10 @@ const PROVIDER_NAME_ALIASES: Record<string, string> = {
   "google-cloud-vertexai": "vertex-ai",
   "aws-sdk-client-bedrock-runtime": "bedrock",
   "azure-openai": "openai",
+  "fal-ai-client": "fal-ai",
 };
 
-function normalizeProviderName(name: string): string {
+export function normalizeProviderName(name: string): string {
   return PROVIDER_NAME_ALIASES[name] ?? name;
 }
 

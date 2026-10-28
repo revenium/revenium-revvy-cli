@@ -189,8 +189,7 @@ function providerFromImport(importPath: string): string {
   // "@revenium/middleware/openai" => "openai"
   // "@revenium/middleware/google/genai" => "google-genai"
   // "@revenium/middleware/google/vertex" => "vertex-ai"
-  // "@revenium/middleware/perplexity" => "perplexity"
-  // "@revenium/middleware/anthropic" => "anthropic"
+  // "@revenium/middleware/fal" => "fal-ai"
   const parts = importPath.split("/");
   const tail = parts.slice(2).join("/"); // strip "@revenium/middleware"
   if (!tail) return "unknown";
@@ -198,8 +197,10 @@ function providerFromImport(importPath: string): string {
   if (tail === "openai") return "openai";
   if (tail === "anthropic") return "anthropic";
   if (tail === "perplexity") return "perplexity";
-  if (tail === "google/genai" || tail === "google") return "google-genai";
+  if (tail === "google/genai") return "google-genai";
   if (tail === "google/vertex") return "vertex-ai";
+  if (tail === "fal") return "fal-ai";
+  if (tail === "litellm") return "litellm";
   return tail.replace(/\//g, "-");
 }
 

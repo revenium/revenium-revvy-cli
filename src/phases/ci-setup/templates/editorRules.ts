@@ -25,11 +25,12 @@ const NODE_PROVIDER_PATTERNS: Record<string, string> = {
   "Vertex AI": `- **Vertex AI**: use the controller pattern from \`revenium-config\` — same shape as Google GenAI.`,
   "Perplexity": `- **Perplexity**: use the wrapped client from \`revenium-config\` — same shape as OpenAI.`,
   "LiteLLM": `- **LiteLLM**: middleware patches global fetch; send Revenium fields as headers on the proxy call.`,
+  "fal.ai": `- **fal.ai**: \`import { Initialize, GetClient } from "@revenium/middleware/fal"\` — call \`Initialize()\` once, then \`GetClient().run(endpoint, input, createUsageMetadata({ ... }))\` (metadata is the trailing argument on \`run\` / \`subscribe\` / \`stream\`).`,
 };
 
 const PYTHON_PROVIDER_PATTERNS: Record<string, string> = {
-  "OpenAI": `- **OpenAI**: \`import revenium_middleware.openai.middleware\` once at app startup; pass \`usage_metadata={...}\` to every \`.create()\`.`,
-  "Azure OpenAI": `- **Azure OpenAI**: same as OpenAI — \`import revenium_middleware.openai.middleware\`.`,
+  "OpenAI": `- **OpenAI**: \`import revenium_middleware.openai\` once at app startup; pass \`usage_metadata={...}\` to every \`.create()\`.`,
+  "Azure OpenAI": `- **Azure OpenAI**: same as OpenAI — \`import revenium_middleware.openai\`.`,
   "Anthropic": `- **Anthropic**: \`import revenium_middleware.anthropic\` once at app startup; pass \`usage_metadata={...}\` on every \`.messages.create()\`.`,
   "Google GenAI": `- **Google GenAI / Vertex**: \`import revenium_middleware.google\` once; pass \`usage_metadata={...}\` to \`.generate_content()\`.`,
   "Google GenAI (legacy)": `- **Google GenAI (legacy)**: \`import revenium_middleware.google\` once.`,
@@ -37,6 +38,7 @@ const PYTHON_PROVIDER_PATTERNS: Record<string, string> = {
   "Perplexity": `- **Perplexity**: \`import revenium_middleware.perplexity\` once; pass \`usage_metadata={...}\` to \`.create()\`.`,
   "LiteLLM": `- **LiteLLM**: \`import revenium_middleware.litellm.client.middleware\` once; pass \`usage_metadata={...}\` to \`litellm.completion()\`.`,
   "Ollama": `- **Ollama**: \`import revenium_middleware.ollama\` once; pass \`usage_metadata={...}\` to \`ollama.chat()\`.`,
+  "fal.ai": `- **fal.ai**: \`import revenium_middleware.fal\` once; pass \`usage_metadata={...}\` to \`fal_client.run()\` / \`subscribe()\` / \`stream()\` / \`submit()\`.`,
 };
 
 function buildProviderSection(
@@ -115,12 +117,51 @@ ${providerSection}
 `;
 }
 
+const GO_PROVIDER_PATTERNS: Record<string, string> = {
+  "OpenAI": `- **OpenAI**: \`github.com/revenium/revenium-go-sdk/openai\` — \`if err := Initialize(); err != nil { ... }\`, \`client, err := GetClient()\`, then \`client.Chat().Completions().New(ctx, params)\` with \`ctx := revenium.WithUsageMetadata(ctx, revenium.Context{...})\`.`,
+  "OpenAI (sashabaranov)": `- **OpenAI (sashabaranov/go-openai)**: not wrapped by the Revenium Go SDK — migrate the call to the wrapped \`openai-go\` client from \`github.com/revenium/revenium-go-sdk/openai\`.`,
+  "Anthropic": `- **Anthropic**: \`github.com/revenium/revenium-go-sdk/anthropic\` — \`client.Messages().CreateMessage(ctx, params)\` with \`ctx := revenium.WithUsageMetadata(ctx, revenium.Context{...})\`. Bedrock is selected automatically when AWS credentials are set.`,
+  "AWS Bedrock": `- **AWS Bedrock**: metered through \`github.com/revenium/revenium-go-sdk/anthropic\` (selected automatically when AWS credentials are set) — call \`client.Messages().CreateMessage(ctx, params)\`, not \`bedrockruntime\` directly.`,
+  "Google GenAI": `- **Google GenAI**: \`github.com/revenium/revenium-go-sdk/google\` — \`client.Models().GenerateContent(ctx, model, contents, config)\` with \`ctx := revenium.WithUsageMetadata(ctx, revenium.Context{...})\`.`,
+  "Vertex AI": `- **Vertex AI**: same module as Google GenAI (\`github.com/revenium/revenium-go-sdk/google\`), selected when \`GOOGLE_CLOUD_PROJECT\` is set.`,
+  "Ollama": `- **Ollama**: \`github.com/revenium/revenium-go-sdk/ollama\` — \`client.ChatCompletions(ctx, req)\` with the metadata on \`ctx\`.`,
+  "fal.ai": `- **fal.ai**: \`github.com/revenium/revenium-go-sdk/fal\` — \`client.Run(ctx, endpoint, input, revenium.UsageMetadata(revenium.Context{...}))\`.`,
+};
+
+function buildGoRule(detectedProviders?: readonly string[]): string {
+  const designFile = getDesignFilename("go");
+  const providerSection = buildProviderSection(detectedProviders, GO_PROVIDER_PATTERNS);
+  return `# Revenium Instrumentation Rules
+
+All AI API calls in this codebase MUST be instrumented with Revenium metering.
+
+## Required
+- Every AI SDK call goes through the wrapped client from the matching \`github.com/revenium/revenium-go-sdk/<provider>\` module (\`Initialize()\` once — it returns an error — then \`client, err := GetClient()\` and \`defer client.Close()\`)
+- Every call receives a context built with \`revenium.WithUsageMetadata(ctx, revenium.Context{...})\` carrying at minimum: CustomerID, Product, Agent, TaskType
+- Never call the upstream provider SDK directly
+
+## Provider-specific patterns (only the providers detected in this project)
+
+${providerSection}
+
+## How to instrument a new AI call
+1. Import the helper package: \`revenium "<module>/revenium"\` (the \`revenium/config.go\` revvy generated)
+2. Build the context: \`ctx := revenium.WithUsageMetadata(ctx, revenium.Context{CustomerID: ..., TaskType: "..."})\`
+3. Make the call on the wrapped client with that \`ctx\`
+
+## Reference
+- Config helper: see revenium/config.go
+- Metering design: see ${designFile}
+- SDK docs: ${REVENIUM_DOCS_URL}
+`;
+}
+
 export function getEditorRules(
   language: "node" | "python" | "go",
   detectedProviders?: readonly string[],
 ): string {
-  return language === "python"
-    ? buildPythonRule(detectedProviders)
-    : buildNodeRule(detectedProviders);
+  if (language === "python") return buildPythonRule(detectedProviders);
+  if (language === "go") return buildGoRule(detectedProviders);
+  return buildNodeRule(detectedProviders);
 }
 

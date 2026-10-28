@@ -4,6 +4,14 @@ import type { SupportedLanguage } from "../../../constants/languages.js";
 import { DEPENDENCY_FILES } from "../../../constants/languages.js";
 import { AI_PROVIDER_PACKAGES } from "../../../constants/detection.js";
 import type { DetectedProvider } from "../../../types/scan-result.js";
+import { GO_PATTERNS } from "../patterns/go-patterns.js";
+
+function goProviderKey(modulePath: string): string {
+  const pattern = GO_PATTERNS.find((p) =>
+    p.packageNames.some((pkg) => pkg === modulePath || pkg.startsWith(`${modulePath}/`)),
+  );
+  return pattern?.provider ?? modulePath.split("/").pop() ?? modulePath;
+}
 
 interface DependencyDetectorResult {
   language: SupportedLanguage;
@@ -144,7 +152,7 @@ async function detectGoDependencies(
     for (const [packageName, displayName] of Object.entries(aiPackages)) {
       if (content.includes(packageName)) {
         providers.push({
-          name: packageName.split("/").pop() || packageName,
+          name: goProviderKey(packageName),
           displayName,
           packageName,
         });

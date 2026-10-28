@@ -21,7 +21,7 @@ export const BILLING_PROVIDERS: BillingProviderInfo[] = [
     credentialType: "api_key",
     placeholder: "sk-ant-admin-...",
     helpText:
-      "For full access to usage data, use an admin key (starts with sk-ant-admin). Regular keys have limited visibility.",
+      "Console accounts: an admin key (starts with sk-ant-admin). Claude Enterprise: an analytics key (starts with sk-ant-api01-) with read:analytics and read:spend_limits. Regular inference keys are refused.",
   },
   {
     value: "bedrock",
@@ -32,8 +32,16 @@ export const BILLING_PROVIDERS: BillingProviderInfo[] = [
       "Provide AWS IAM credentials with Cost Explorer access (ce:GetCostAndUsage permission).",
   },
   {
+    value: "azure",
+    label: "Azure OpenAI",
+    credentialType: "json_credentials",
+    placeholder: '{"tenantId":"...","clientId":"...","clientSecret":"...","subscriptionId":"..."}',
+    helpText:
+      "Provide an Entra ID service principal with Cost Management Reader on the subscription: tenantId, clientId, clientSecret and subscriptionId.",
+  },
+  {
     value: "vertex",
-    label: "Google Vertex AI",
+    label: "Google (Vertex AI)",
     credentialType: "json_credentials",
     placeholder: "Paste your service account JSON here...",
     helpText:
@@ -43,9 +51,9 @@ export const BILLING_PROVIDERS: BillingProviderInfo[] = [
     value: "openrouter",
     label: "OpenRouter",
     credentialType: "json_credentials",
-    placeholder: '{"apiKey":"sk-or-v1-..."}',
+    placeholder: '{"provisioningKey":"sk-or-v1-..."}',
     helpText:
-      'Provide JSON with your OpenRouter API key: {"apiKey":"sk-or-v1-..."}. Get your key from openrouter.ai/keys.',
+      'Provide JSON with an OpenRouter provisioning key: {"provisioningKey":"sk-or-v1-..."}. OpenRouter serves cost data only to a provisioning (management) key — create one at openrouter.ai/settings/management-keys; a standard inference key is refused.',
   },
   {
     value: "litellm",
@@ -69,7 +77,7 @@ export const BILLING_PROVIDERS: BillingProviderInfo[] = [
     credentialType: "api_key",
     placeholder: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:xxxxxxxxxxxxxxxx",
     helpText:
-      "Provide your fal.ai ADMIN API key. Regular keys cannot access billing data.",
+      "Provide a fal.ai key created with the FULL preset, or a custom key with billing:usage:read, auth:keys:read, account:users:read and models:metrics:read. A legacy ADMIN key also works; a BILLING-only key syncs spend but reports 0 requests.",
   },
 ];
 
@@ -78,6 +86,9 @@ export interface ProviderSyncMetadata {
   expectedTimeRange: string;
   historicalSyncMessage: string;
 }
+
+export const DAILY_REFRESH_NOTE =
+  "After the initial backfill, provider spend refreshes once a day at midnight UTC.";
 
 export const PROVIDER_SYNC_TIMES: Record<string, ProviderSyncMetadata> = {
   anthropic: {
@@ -102,7 +113,13 @@ export const PROVIDER_SYNC_TIMES: Record<string, ProviderSyncMetadata> = {
     expectedMinutes: 480,
     expectedTimeRange: "6-12 hours",
     historicalSyncMessage:
-      "Google Vertex AI data can take 6-12 hours to appear. Check back later.",
+      "Google Cloud billing export data can take 6-12 hours to appear. Check back later.",
+  },
+  azure: {
+    expectedMinutes: 960,
+    expectedTimeRange: "8-24 hours",
+    historicalSyncMessage:
+      "Azure cost data typically appears within 8-24 hours (up to 72 hours on pay-as-you-go). Check back tomorrow.",
   },
   openrouter: {
     expectedMinutes: 5,

@@ -32,6 +32,8 @@ export interface ProviderPattern {
    * file means that file is already instrumented for this provider.
    */
   instrumentationImports: string[];
+  /** Module to install when this provider is not instrumented, if it differs from instrumentationImports[0]. */
+  installModule?: string;
 }
 
 export const NODE_PATTERNS: ProviderPattern[] = [
@@ -127,7 +129,6 @@ export const NODE_PATTERNS: ProviderPattern[] = [
     ],
     instrumentationImports: [
       "@revenium/middleware/google/genai",
-      "@revenium/middleware/google",
     ],
   },
   {
@@ -227,7 +228,15 @@ export const NODE_PATTERNS: ProviderPattern[] = [
       { methodChain: "subscribe", operationType: "image" },
       { methodChain: "stream", operationType: "image" },
     ],
-    instrumentationImports: [],
+    instrumentationImports: ["@revenium/middleware/fal"],
+  },
+  {
+    provider: "litellm",
+    displayName: "LiteLLM",
+    packageNames: [],
+    language: "node",
+    callPatterns: [],
+    instrumentationImports: ["@revenium/middleware/litellm"],
   },
   {
     provider: "aws-bedrock",
