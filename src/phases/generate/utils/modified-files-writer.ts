@@ -1,10 +1,11 @@
-import { join } from "path";
 import { configHelperFileName } from "../config-helper.js";
-import { writeFile } from "fs/promises";
+import { writeGeneratedFile, type GeneratedFileResult } from "../../../utils/generated-file.js";
 import type { InstrumentationResult } from "../../instrument/instrumenter.js";
 import { getDesignFilename } from "./design-writer.js";
 import { getManifestFilename } from "./manifest-writer.js";
 import { getMonorepoTodoFilename } from "../../non-interactive/monorepo-todo-writer.js";
+import type { GitignoreUpdate } from "../../../utils/gitignore.js";
+import type { EnvWriteResult } from "../../../utils/env-helpers.js";
 
 const FILENAME = "revenium-modified-files.json";
 
@@ -26,6 +27,8 @@ export interface ModifiedFilesManifestArgs {
   instrumentResult: InstrumentationResult;
   language: "node" | "python" | "go";
   envCreated: boolean;
+  /** The .env write, so an in-place rewrite of an existing .env is recorded too. */
+  envWrite?: EnvWriteResult;
   /** Set true when the project layout is a monorepo (helper + .env held back). */
   isMonorepo?: boolean;
   /**
@@ -35,10 +38,23 @@ export interface ModifiedFilesManifestArgs {
    * depending on flow, and we want the manifest to be a complete record.
    */
   extraGeneratedFiles?: string[];
+  gitignoreUpdate?: GitignoreUpdate;
+}
+
+function gitignoreChanges(update: GitignoreUpdate | undefined): Array<{ file: string; changes: string[] }> {
+  if (!update || update.added.length === 0 || update.created) return [];
+  return [{ file: ".gitignore", changes: update.added.map((entry) => `Ignored ${entry}`) }];
+}
+
+function envChanges(write: EnvWriteResult | undefined): Array<{ file: string; changes: string[] }> {
+  if (!write || write.created || write.changes.length === 0) return [];
+  const changes = write.changes.map((c) => `${c.action[0]!.toUpperCase()}${c.action.slice(1)} ${c.key}`);
+  if (write.backupFile) changes.push(`Previous version saved to ${write.backupFile}`);
+  return [{ file: ".env", changes }];
 }
 
 export function buildModifiedFilesManifest(args: ModifiedFilesManifestArgs): ModifiedFilesManifest {
-  const { instrumentResult, language, envCreated, isMonorepo, extraGeneratedFiles } = args;
+  const { instrumentResult, language, envCreated, envWrite, isMonorepo, extraGeneratedFiles, gitignoreUpdate } = args;
 
   const generatedFiles: string[] = [
     getDesignFilename(language),
@@ -58,15 +74,17 @@ export function buildModifiedFilesManifest(args: ModifiedFilesManifestArgs): Mod
   if (extraGeneratedFiles) {
     for (const f of extraGeneratedFiles) generatedFiles.push(f);
   }
+  if (gitignoreUpdate?.created) generatedFiles.push(".gitignore");
 
   generatedFiles.push(FILENAME);
 
   return {
     version: "1.0",
-    modifiedFiles: instrumentResult.changes.map((c) => ({
-      file: c.filePath,
-      changes: c.changes,
-    })),
+    modifiedFiles: [
+      ...instrumentResult.changes.map((c) => ({ file: c.filePath, changes: c.changes })),
+      ...gitignoreChanges(gitignoreUpdate),
+      ...envChanges(envWrite),
+    ],
     generatedFiles,
     ...(isMonorepo ? { monorepo: true as const } : {}),
   };
@@ -75,11 +93,9 @@ export function buildModifiedFilesManifest(args: ModifiedFilesManifestArgs): Mod
 export async function writeModifiedFilesManifest(
   targetDir: string,
   args: ModifiedFilesManifestArgs,
-): Promise<string | null> {
+): Promise<GeneratedFileResult | null> {
   if (args.instrumentResult.filesModified === 0) return null;
 
   const manifest = buildModifiedFilesManifest(args);
-  const filePath = join(targetDir, FILENAME);
-  await writeFile(filePath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
-  return filePath;
+  return writeGeneratedFile(targetDir, FILENAME, JSON.stringify(manifest, null, 2) + "\n");
 }

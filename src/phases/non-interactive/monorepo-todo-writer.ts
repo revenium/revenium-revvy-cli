@@ -8,8 +8,7 @@
  * instead drops a `revenium-monorepo-todo.md` at the repo root with the
  * exact contents the agent should place at locations the agent picks.
  */
-import { join } from "path";
-import { writeFile } from "fs/promises";
+import { writeGeneratedFile, type GeneratedFileResult } from "../../utils/generated-file.js";
 import type { MeteringDesign } from "../../types/metering-design.js";
 import type { PackageManagerInfo } from "../../utils/package-manager.js";
 import { buildEnvContent } from "../../utils/env-helpers.js";
@@ -22,6 +21,7 @@ interface MonorepoTodoArgs {
   design: MeteringDesign;
   pmInfo: PackageManagerInfo;
   apiKey: string;
+  baseUrl?: string;
 }
 
 const TODO_FILENAME = "revenium-monorepo-todo.md";
@@ -30,18 +30,16 @@ export function getMonorepoTodoFilename(): string {
   return TODO_FILENAME;
 }
 
-export async function writeMonorepoTodo(args: MonorepoTodoArgs): Promise<string> {
-  const { targetDir, design, pmInfo, apiKey } = args;
-  const path = join(targetDir, TODO_FILENAME);
-  const content = buildMonorepoTodoContent(design, pmInfo, apiKey);
-  await writeFile(path, content, "utf-8");
-  return path;
+export async function writeMonorepoTodo(args: MonorepoTodoArgs): Promise<GeneratedFileResult> {
+  const { targetDir, design, pmInfo, apiKey, baseUrl } = args;
+  return writeGeneratedFile(targetDir, TODO_FILENAME, buildMonorepoTodoContent(design, pmInfo, apiKey, baseUrl));
 }
 
 export function buildMonorepoTodoContent(
   design: MeteringDesign,
   pmInfo: PackageManagerInfo,
   apiKey: string,
+  baseUrl?: string,
 ): string {
   const language = design.detectedLanguage;
   const isPython = language === "python";
@@ -57,7 +55,7 @@ export function buildMonorepoTodoContent(
   // Redact the API key in the env block — the real .env should be written
   // by the agent, but the example shouldn't paste a live key into a markdown
   // file that may end up in source control.
-  const envSample = buildEnvContent(apiKey).replace(
+  const envSample = buildEnvContent(apiKey, baseUrl).replace(
     /REVENIUM_METERING_API_KEY=.+/,
     "REVENIUM_METERING_API_KEY=<your-metering-key>",
   );
@@ -122,7 +120,7 @@ After placing the helper, update the import path in every modified source file s
 ${helperImportHint}
 \`\`\`
 
-Revvy's transforms left a default import path of \`./revenium-config\` (Node) or \`revenium_config\` (Python). Adjust it to match the actual placement you chose.
+Revvy's transforms point each Node file at \`src/revenium-config.ts\` under the repo root (the single-package location), and Python files at \`revenium_config\`. Adjust each import to the actual placement you chose.
 
 ---
 

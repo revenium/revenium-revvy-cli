@@ -17,6 +17,9 @@ export interface ApiResponse<T> {
   status?: number;
 }
 
+// The platform's response is much wider (access[], department, navCustomization,
+// roles, …). Revvy reads only what it needs to pick a team, so additions upstream
+// are safe by construction and must not be mistaken for missing fields here.
 interface UserMeResponse {
   id?: string;
   email?: string;

@@ -18,6 +18,7 @@ import {
 
 interface BillingProvidersProps {
   apiKey: string;
+  baseUrl?: string;
   teamId: string;
   onComplete: (result: BillingProvidersResult) => void;
   onBack?: () => void;
@@ -170,6 +171,7 @@ function ApiKeyInput({
 
 export function BillingProviders({
   apiKey,
+  baseUrl,
   teamId,
   onComplete,
   onBack,
@@ -177,6 +179,7 @@ export function BillingProviders({
   const { state, selectProviders, submitKey, skipProvider, goBackToSelection, confirmResults } =
     useBillingProviders({
       apiKey,
+      baseUrl,
       teamId,
       onComplete,
     });

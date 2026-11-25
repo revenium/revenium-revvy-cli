@@ -5,6 +5,7 @@ import { Spinner } from "../../components/Spinner.js";
 import { StatusLine } from "../../components/StatusLine.js";
 import { useGenerate } from "./useGenerate.js";
 import { getDesignFilename } from "./utils/design-writer.js";
+import { describeGeneratedFile } from "../../utils/generated-file.js";
 import { getInstallCommand } from "../instrument/instrumenter.js";
 import { detectPackageManager, type PackageManagerInfo } from "../../utils/package-manager.js";
 import type { MeteringDesign } from "../../types/metering-design.js";
@@ -46,13 +47,17 @@ export function Generate({
         {state.step === "writing-design" && (
           <Spinner label="Writing metering design..." />
         )}
-        {state.generatedFiles.includes(designFilename) && (
-          <StatusLine
-            icon="✓"
-            label={`Created ${designFilename}`}
-            status="success"
-          />
+        {state.gitignoreSummary && (
+          <StatusLine icon="✓" label={state.gitignoreSummary} status="success" />
         )}
+        {state.trackedWarning && (
+          <StatusLine icon="⚠" label={state.trackedWarning} status="warning" />
+        )}
+        {state.results
+          .filter((r) => r.file === designFilename)
+          .map((r) => (
+            <StatusLine key={r.file} icon="✓" label={describeGeneratedFile(r)} status="success" />
+          ))}
 
         {state.step === "generating-utility" && (
           <Spinner label="Generating instrumentation utility..." />
@@ -64,13 +69,13 @@ export function Generate({
 
         {state.step === "done" && !state.error && (
           <>
-            {state.generatedFiles
-              .filter((f) => f !== designFilename)
-              .map((file) => (
+            {state.results
+              .filter((r) => r.file !== designFilename)
+              .map((r) => (
                 <StatusLine
-                  key={file}
+                  key={r.file}
                   icon="✓"
-                  label={`Created ${file}`}
+                  label={describeGeneratedFile(r)}
                   status="success"
                 />
               ))}

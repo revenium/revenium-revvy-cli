@@ -20,24 +20,31 @@ import { buildDesignFromArgs, type CliDesignArgs } from "../consultation/design-
 import { writeMeteringDesign, getDesignFilename } from "../generate/utils/design-writer.js";
 import { writeCallSiteManifest, buildCallSiteManifest, getManifestFilename } from "../generate/utils/manifest-writer.js";
 import { writeModifiedFilesManifest } from "../generate/utils/modified-files-writer.js";
-import { renderTemplate } from "../../utils/template-engine.js";
-import { safeWriteFile, fileExists, ensureDir } from "../../utils/fs-helpers.js";
-import { buildEnvContent } from "../../utils/env-helpers.js";
+import { detectPackageManager } from "../../utils/package-manager.js";
+import { configHelperFileName, renderConfigHelper } from "../generate/config-helper.js";
+import { describeEnvWrite, writeMeteringEnv } from "../../utils/env-helpers.js";
+import {
+  describeGeneratedFile,
+  describeGeneratedGroup,
+  writeGeneratedFile,
+  type GeneratedFileResult,
+} from "../../utils/generated-file.js";
+import {
+  describeGitignoreUpdate,
+  ensureRevvyFilesIgnored,
+  trackedFilesWarning,
+  type GitignoreUpdate,
+} from "../../utils/gitignore.js";
 import {
   instrumentCallSites,
   previewInstrumentation,
   getInstallCommand,
 } from "../instrument/instrumenter.js";
-import { GITHUB_ACTION_WORKFLOW } from "../ci-setup/templates/githubAction.js";
-import { getEditorRules } from "../ci-setup/templates/editorRules.js";
-import { AGENT_PROMPT } from "../ci-setup/templates/agentPrompt.js";
-import { readFile, writeFile, appendFile } from "fs/promises";
-import { join, relative, resolve } from "path";
+import { EDITOR_GROUP_LABEL, writeEditorFiles, writeGitHubWorkflow } from "../ci-setup/ci-files-writer.js";
+import { NOTHING_SET_UP_EXIT_CODE, hasNothingToSetUp, nothingToSetUpLines } from "../scan/no-ai-calls.js";
+import { relative, resolve } from "path";
 import type { ScanResult } from "../../types/scan-result.js";
-
-// Templates loaded as strings
-import nodeTemplate from "../generate/templates/node-ts/revenium-config.ts.ejs";
-import pythonTemplate from "../generate/templates/python/revenium_config.py.ejs";
+import { CALL_SITE_NOTE, assessMeteringStatus, type MeteringStatusLine } from "../ci-setup/check/metering-status.js";
 
 export interface NonInteractiveArgs {
   apiKey: string;
@@ -71,15 +78,25 @@ interface LogEntry {
 interface RunnerState {
   step: RunnerStep;
   error?: string;
+  nothingToSetUp?: string[];
   utilityFile?: string;
   logs: LogEntry[];
+  meteringStatus: MeteringStatusLine[];
+  nothingToMeter?: boolean;
 }
+
+const STATUS_COLORS: Record<MeteringStatusLine["tone"], string | undefined> = {
+  success: colors.success,
+  warning: colors.warning,
+  detail: undefined,
+};
 
 export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
   const { exit } = useApp();
   const [state, setState] = useState<RunnerState>({
     step: "validating",
     logs: [],
+    meteringStatus: [],
   });
 
   useEffect(() => {
@@ -92,6 +109,7 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
 
       try {
         // 1. Validate API key (skip for dry-run without key)
+        let keyUnverified = false;
         setState((prev) => ({ ...prev, step: "validating" }));
         if (args.apiKey) {
           const client = new ReveniumApiClient({ apiKey: args.apiKey, baseUrl: args.baseUrl });
@@ -102,6 +120,7 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
           if (cancelled) return;
           if (keyResult.data.meteringOnly) {
             if (keyResult.data.unverified) {
+              keyUnverified = true;
               log(`Could not verify the metering key — ${keyResult.error ?? "API unreachable"}. Continuing; metering may not work.`, true);
             } else {
               log("API key verified against the metering API");
@@ -145,6 +164,15 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
 
         log(`Scanned: ${depResult.language}, ${formatProviderSummary(providerAgg)}, ${callSiteResult.callSites.length} AI calls`);
 
+        if (hasNothingToSetUp(scanResult)) {
+          setState((prev) => ({ ...prev, step: "done", nothingToSetUp: nothingToSetUpLines(scanResult, args.dryRun === true) }));
+          setTimeout(() => {
+            process.exitCode = NOTHING_SET_UP_EXIT_CODE;
+            exit();
+          }, 100);
+          return;
+        }
+
         // Log auto-detection of customer ID when not explicitly provided
         if (!args.customerIdExpression && customerCandidates.length > 0) {
           const top = customerCandidates[0]!;
@@ -166,32 +194,22 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
         // 4. Generate config files (skip writes in dry-run mode)
         setState((prev) => ({ ...prev, step: "generating" }));
 
-        const utilityFile = design.detectedLanguage === "python"
-          ? "revenium_config.py"
-          : "src/revenium-config.ts";
+        const utilityFile = configHelperFileName(design.detectedLanguage);
         setState((prev) => ({ ...prev, utilityFile }));
 
+        let gitignoreUpdate: GitignoreUpdate | undefined;
         if (!args.dryRun) {
-          await writeMeteringDesign(targetDir, design);
-          log(`Created ${getDesignFilename(design.detectedLanguage)}`);
+          gitignoreUpdate = await ensureRevvyFilesIgnored(targetDir);
+          log(describeGitignoreUpdate(gitignoreUpdate));
+          const trackedWarning = trackedFilesWarning(gitignoreUpdate);
+          if (trackedWarning) log(trackedWarning, true);
 
-          await writeCallSiteManifest(targetDir, scanResult, design);
-          log(`Created ${getManifestFilename(design.detectedLanguage)} (${scanResult.callSites.length} call sites)`);
+          log(describeGeneratedFile(await writeMeteringDesign(targetDir, design)));
 
-          const template = design.detectedLanguage === "python" ? pythonTemplate : nodeTemplate;
-          const utilityContent = renderTemplate(template, {
-            providers: design.detectedProviders,
-            organization: design.organization,
-            products: design.products,
-            agents: design.agents,
-            taskTypes: design.taskTypes,
-            trackingGoal: design.trackingGoal,
-            outcomeTracking: design.outcomeTracking,
-            centralizedCallPattern: design.centralizedCallPattern,
-          });
+          const manifestResult = await writeCallSiteManifest(targetDir, scanResult, design);
+          log(describeGeneratedFile(manifestResult, `(${scanResult.callSites.length} call sites)`));
 
-          await safeWriteFile(join(targetDir, utilityFile), utilityContent);
-          log(`Created ${utilityFile}`);
+          log(describeGeneratedFile(await writeGeneratedFile(targetDir, utilityFile, renderConfigHelper(design))));
         }
         if (cancelled) return;
 
@@ -217,30 +235,19 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
           if (cancelled) return;
           log(`Instrumented ${instrumentResult.filesModified} files (${instrumentResult.totalChanges} changes)`);
 
-          // .env
-          let envCreated = false;
-          const envPath = join(targetDir, ".env");
-          const envContent = buildEnvContent(args.apiKey);
-          if (await fileExists(envPath)) {
-            const existing = await readFile(envPath, "utf-8");
-            if (!existing.includes("REVENIUM_METERING_API_KEY")) {
-              await appendFile(envPath, envContent);
-              log("Added REVENIUM_METERING_API_KEY to .env");
-            }
-          } else {
-            await writeFile(envPath, envContent.trimStart(), "utf-8");
-            log("Created .env with REVENIUM_METERING_API_KEY");
-            envCreated = true;
-          }
+          const envResult = await writeMeteringEnv(targetDir, args.apiKey, args.baseUrl, { keyVerified: !keyUnverified });
+          log(describeEnvWrite(envResult));
 
           // Modified files manifest
-          const modifiedManifestPath = await writeModifiedFilesManifest(targetDir, {
+          const modifiedManifestResult = await writeModifiedFilesManifest(targetDir, {
             instrumentResult,
             language: design.detectedLanguage,
-            envCreated,
+            envCreated: envResult.created,
+            envWrite: envResult,
+            gitignoreUpdate,
           });
-          if (modifiedManifestPath) {
-            log("Created revenium-modified-files.json");
+          if (modifiedManifestResult) {
+            log(describeGeneratedFile(modifiedManifestResult));
           }
         }
 
@@ -248,31 +255,26 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
         if (!args.skipCi && !args.dryRun) {
           setState((prev) => ({ ...prev, step: "ci-setup" }));
 
-          // GitHub Actions
-          const ghPath = join(targetDir, ".github/workflows/revenium-check.yml");
-          await ensureDir(ghPath);
-          await writeFile(ghPath, GITHUB_ACTION_WORKFLOW, "utf-8");
-          log("Created .github/workflows/revenium-check.yml");
+          log(describeGeneratedFile(await writeGitHubWorkflow(targetDir, design.detectedLanguage === "node" ? await detectPackageManager(targetDir) : undefined)));
 
-          // Editor rules + agent prompt (language-aware + provider-aware)
-          const editorRulesContent = getEditorRules(depResult.language, design.detectedProviders);
-          const editorDirs = [".cursor", ".claude", ".gemini", ".codex"];
-
-          for (const dir of editorDirs) {
-            const rulesPath = join(targetDir, dir, "rules/revenium.md");
-            await ensureDir(rulesPath);
-            await writeFile(rulesPath, editorRulesContent, "utf-8");
-
-            const agentPath = join(targetDir, dir, "revvy-agent.md");
-            await ensureDir(agentPath);
-            await writeFile(agentPath, AGENT_PROMPT, "utf-8");
+          const editorResults: GeneratedFileResult[] = [];
+          for await (const result of writeEditorFiles(targetDir, depResult.language, design.detectedProviders)) {
+            editorResults.push(result);
           }
           if (cancelled) return;
-          log("Created editor rules + agent prompts (Cursor, Claude, Gemini, Codex)");
+          log(describeGeneratedGroup(EDITOR_GROUP_LABEL, editorResults));
         }
 
         const installCmd = getInstallCommand(design);
         log(`Install SDK: ${installCmd}`);
+
+        if (!args.dryRun) {
+          const { lines, check } = await assessMeteringStatus(targetDir, args.excludePatterns, keyUnverified);
+          if (cancelled) return;
+          const nothingToMeter = check?.totalCallSites === 0;
+          if (nothingToMeter) process.exitCode = 1;
+          setState((prev) => ({ ...prev, meteringStatus: lines, nothingToMeter }));
+        }
 
         setState((prev) => ({ ...prev, step: "done" }));
         setTimeout(() => exit(), 100);
@@ -308,6 +310,14 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
           />
         ))}
 
+        {state.nothingToSetUp && (
+          <Box flexDirection="column" marginTop={1}>
+            {state.nothingToSetUp.map((line, i) => (
+              <Text key={i} color={i === 0 ? colors.error : undefined}>{line}</Text>
+            ))}
+          </Box>
+        )}
+
         {state.step !== "done" && (
           <Spinner label={
             state.step === "validating" ? "Validating API key..." :
@@ -320,24 +330,29 @@ export function NonInteractiveRunner({ args }: { args: NonInteractiveArgs }) {
           } />
         )}
 
-        {state.step === "done" && !state.error && args.dryRun && (
+        {state.step === "done" && !state.error && !state.nothingToSetUp && args.dryRun && (
           <Box flexDirection="column" marginTop={1}>
             <Text dimColor>Dry-run preview complete. No files were written.</Text>
           </Box>
         )}
 
-        {state.step === "done" && !state.error && !args.dryRun && (
+        {state.step === "done" && !state.error && !state.nothingToSetUp && !args.dryRun && (
           <Box flexDirection="column" marginTop={1}>
-            <Text bold color={colors.success}>Setup complete!</Text>
+            {state.nothingToMeter
+              ? <Text bold color={colors.warning}>Setup incomplete — no AI calls found.</Text>
+              : <Text bold color={colors.success}>Setup complete!</Text>}
             <Text>{""}</Text>
-            <Text color={colors.success}>  ✓ Basic metering active</Text>
-            <Text dimColor>    Tokens, model, and cost are tracked automatically via middleware imports.</Text>
+            {state.meteringStatus.map((line, i) => (
+              <Text key={`status-${i}`} color={STATUS_COLORS[line.tone]} dimColor={line.tone === "detail"}>
+                {"  "}{line.text}
+              </Text>
+            ))}
             <Text>{""}</Text>
-            <Text color={colors.accent}>  ℹ Revvy intentionally adds imports + a reference comment, but does NOT modify</Text>
-            <Text dimColor>    your AI call sites — that's left to you (or your AI coding agent), because</Text>
-            <Text dimColor>    static call-site mutation across the SDK matrix is error-prone.</Text>
-            <Text dimColor>    See the comment block revvy inserted in the modified file(s) for the exact</Text>
-            <Text dimColor>    usageMetadata to copy into your .create() calls.</Text>
+            {CALL_SITE_NOTE.map((line, i) => (
+              <Text key={`note-${i}`} color={i === 0 ? colors.accent : undefined} dimColor={i > 0}>
+                {"  "}{line}
+              </Text>
+            ))}
             <Text>{""}</Text>
             <Text bold>Next steps:</Text>
             <Text dimColor>  1. Install the SDK (see install command above)</Text>

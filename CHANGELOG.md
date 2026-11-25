@@ -5,7 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-11-25
+
+### Added
+
+- Billing providers: ChatGPT Enterprise (workspace admin key + workspace ID), Cursor and GitHub Copilot can be connected from the interactive wizard, with local format checks and their real sync timings
+- Agent guide: the full metering field set the SDKs and platform carry today — cache-TTL token buckets (5m/1h/12h), reasoning and streaming fields, failed-call and no-charge fields, coding-assistant client fields with the platform's caps, `inferenceGeo`, squads and service tiers — and a per-SDK matrix rebuilt from the published `@revenium/middleware` 2.1.0, `revenium-python-sdk` 0.16.1 and `revenium-go-sdk` 1.1.9
+- Agent guide: a complete job-type economics declaration (unit of work, monetization, overhead, dimensions), period facts and the versioned pre-AI baseline
+
+### Changed
+
+- Node projects on `@google/genai` are instrumented with a side-effect import of `@revenium/middleware/google/genai` (2.1.0 meters the app's own client) instead of a controller rewrite; files that `require()` the SDK get a `require`, files from an earlier revvy run are upgraded, and the older `@google/generative-ai` SDK keeps the controller
+- Agent guide: rate limits now cover the per-key edge limit on the management API, the per-account metering ceiling and the per-key-and-team error-pattern limit; strict ingestion is described as answering `201` and listing rejections under ingestion-failures; write keys owned by a Member or Department Admin are named as a cause of outcome `403`s
+- Agent guide: the OpenAI/Azure cache-token convention and the canonical `Bedrock` provider value; Node 2.1.0 and Python 0.14.0 upgrade notes
+
+### Fixed
+
+- Node OpenAI and Perplexity projects are no longer reported as metered while their calls still run on the raw SDK client: each raw client gets a `TODO(revenium)` naming the wrapped-client change, and the run summary and `revvy check` count those calls as not metered until it is made; the earlier release's unused `GetClient` binding and duplicate `Initialize()` are removed on rerun
+- Python apps meter with the key in `.env` and no other change (`.env` is loaded before the first middleware import); `revvy check` fails a Python project whose running code never imports the middleware; PEP 8 spacing is preserved
+- `--base-url` reaches the generated `.env` (`REVENIUM_METERING_BASE_URL`) and the interactive wizard, so non-production onboardings no longer meter to production; `.env` is merged, never overwritten
+- `.env` and `*.revvy-backup` are added to `.gitignore`, and backups keep the original file's permissions
+- A rerun backs up any generated file the developer edited instead of silently overwriting it, and reports Created / Updated / Unchanged
+- A folder with no AI calls gets no files and exits 1
+- Snippets carry the product and agent given to revvy, use the project's language (Go gets Go), and import the helper by a path that resolves; the helpers accept `agenticJobType`, `agenticJobVersion` and `environment`; `revvy check` recognises Go calls whose context carries usage metadata
+- The dry run prints every generated file in full; the agent guide documents `--base-url` and `check --output-format json`, corrects Quick Start step 3, and fixes the Node outcomes snippet (`initializeConfig()` and `REVENIUM_TEAM_ID`)
+- The agent guide and `--setup-mode` help no longer claim `both` connects billing providers in non-interactive mode
+- Vertex AI help text names the `billing_dataset` key and the BigQuery prerequisites
 
 ## [1.0.2] - 2026-10-28
 
@@ -64,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dry-run mode (`--dry-run`) to preview changes without writing files
 - Test metering event verification before marking setup complete
 
+[1.1.0]: https://github.com/revenium/revenium-revvy-cli/releases/tag/v1.1.0
 [1.0.2]: https://github.com/revenium/revenium-revvy-cli/releases/tag/v1.0.2
 [1.0.1]: https://github.com/revenium/revenium-revvy-cli/releases/tag/v1.0.1
 [1.0.0]: https://github.com/revenium/revenium-revvy-cli/releases/tag/v1.0.0

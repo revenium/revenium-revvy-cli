@@ -13,6 +13,8 @@ interface InstrumentProps {
   scanResult: ScanResult;
   meteringDesign: MeteringDesign;
   apiKey?: string;
+  baseUrl?: string;
+  keyVerified: boolean;
   onComplete: (result: InstrumentationResult, installCmd: string) => void;
 }
 
@@ -77,6 +79,8 @@ export function Instrument({
   scanResult,
   meteringDesign,
   apiKey,
+  baseUrl,
+  keyVerified,
   onComplete,
 }: InstrumentProps) {
   const state = useInstrument({
@@ -84,6 +88,8 @@ export function Instrument({
     scanResult,
     meteringDesign,
     apiKey,
+    baseUrl,
+    keyVerified,
     onComplete,
   });
 
@@ -128,6 +134,7 @@ export function Instrument({
         <Box flexDirection="column" gap={1}>
           <Text bold>Instrumentation Preview</Text>
           <StatusLine icon="ℹ" label="No files need modification — your code is already instrumented or no transforms are available." status="info" />
+          {state.envSummary && <StatusLine icon="✓" label={state.envSummary} status="success" />}
           <Text dimColor>{"\n"}  Press any key to continue...</Text>
         </Box>
       );
@@ -215,8 +222,8 @@ export function Instrument({
         {state.step === "setting-env" && (
           <Spinner label="Setting up environment variables..." />
         )}
-        {state.envUpdated && (
-          <StatusLine icon="✓" label="Added REVENIUM_METERING_API_KEY to .env" status="success" />
+        {state.envSummary && (
+          <StatusLine icon="✓" label={state.envSummary} status="success" />
         )}
 
         {state.step === "done" && state.result && (

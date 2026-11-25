@@ -4,6 +4,7 @@ import { hideBin } from "yargs/helpers";
 import { App } from "./app.js";
 import { VERSION } from "./constants/version.js";
 import { ENV_VARS } from "./constants/api.js";
+import { validateBaseUrlForEnv } from "./utils/env-helpers.js";
 
 const cli = yargs(hideBin(process.argv))
   .scriptName("revvy")
@@ -87,7 +88,7 @@ const cli = yargs(hideBin(process.argv))
         })
         .option("setup-mode", {
           type: "string",
-          description: "Setup mode: 'instrumentation' (imports only) or 'both' (imports + metering design)",
+          description: "Setup mode for --non-interactive: 'instrumentation' or 'both'. Both instrument code only; billing providers are connected in the interactive wizard",
           choices: ["instrumentation", "both"] as const,
         })
         .option("customer-id-expression", {
@@ -128,6 +129,13 @@ const cli = yargs(hideBin(process.argv))
     async (argv) => {
       const isTTY = process.stdout.isTTY && process.stdin.isTTY;
 
+      const baseUrl = argv.baseUrl as string | undefined;
+      if (baseUrl && !validateBaseUrlForEnv(baseUrl)) {
+        console.error(`Error: --base-url "${baseUrl}" is not a valid http(s) URL.`);
+        console.error("  Pass the Revenium API base URL, e.g. --base-url https://api.revenium.ai");
+        process.exit(1);
+      }
+
       // Mutual exclusion + literal handling apply to both interactive and non-interactive modes.
       const rawExpression = argv.customerIdExpression as string | undefined;
       const rawLiteral = argv.customerIdLiteral as string | undefined;
@@ -139,15 +147,12 @@ const cli = yargs(hideBin(process.argv))
         process.exit(1);
       }
 
-      // Bare-identifier warning for --customer-id-expression.
-      const BARE_IDENTIFIER_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-      if (rawExpression !== undefined && BARE_IDENTIFIER_RE.test(rawExpression)) {
-        process.stderr.write(
-          `⚠ --customer-id-expression "${rawExpression}" looks like a bare identifier. ` +
-          `If you meant a literal string constant, use --customer-id-literal "${rawExpression}" instead. ` +
-          `If you meant a code expression that resolves to a variable, you may need to escape the quotes ` +
-          `('"${rawExpression}"') or use a more qualified expression (e.g., "req.user.${rawExpression}").\n`
-        );
+      if (rawExpression !== undefined) {
+        const { detectDependencies } = await import("./phases/scan/detectors/index.js");
+        const { bareIdentifierNotice } = await import("./utils/customer-id-notice.js");
+        const detected = await detectDependencies(argv.targetDir as string).catch(() => null);
+        const notice = detected && bareIdentifierNotice(rawExpression, detected.language);
+        if (notice) process.stderr.write(`${notice}\n`);
       }
 
       // --customer-id-literal: use JSON.stringify so values containing ", \, or newlines are escaped correctly.
@@ -174,7 +179,7 @@ const cli = yargs(hideBin(process.argv))
 
         const pipelineArgs = {
           apiKey,
-          baseUrl: argv.baseUrl as string | undefined,
+          baseUrl,
           targetDir: argv.targetDir as string,
           setupMode,
           customerIdExpression: resolvedCustomerIdExpression,
@@ -225,6 +230,7 @@ const cli = yargs(hideBin(process.argv))
         render(
           <App
             apiKey={argv.apiKey as string | undefined}
+            baseUrl={baseUrl}
             targetDir={argv.targetDir as string}
             debug={argv.debug as boolean}
           />,

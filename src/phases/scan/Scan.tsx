@@ -1,4 +1,7 @@
-import { Box, Text } from "ink";
+import { useEffect } from "react";
+import { Box, Text, useApp, useInput } from "ink";
+import { colors } from "../../constants/colors.js";
+import { NOTHING_SET_UP_EXIT_CODE } from "./no-ai-calls.js";
 import { Spinner } from "../../components/Spinner.js";
 import { StatusLine } from "../../components/StatusLine.js";
 import { useScan } from "./useScan.js";
@@ -7,10 +10,27 @@ import type { ScanResult } from "../../types/scan-result.js";
 interface ScanProps {
   targetDir: string;
   onComplete: (result: ScanResult) => void;
+  /**
+   * Called instead of exiting when no AI calls are found but an earlier phase
+   * already set something up (billing providers in "both" mode).
+   */
+  onNothingToSetUp?: () => void;
 }
 
-export function Scan({ targetDir, onComplete }: ScanProps) {
+export function Scan({ targetDir, onComplete, onNothingToSetUp }: ScanProps) {
   const state = useScan({ targetDir, onComplete });
+  const { exit } = useApp();
+
+  useEffect(() => {
+    if (!state.nothingToSetUp || onNothingToSetUp) return;
+    process.exitCode = NOTHING_SET_UP_EXIT_CODE;
+    exit();
+  }, [state.nothingToSetUp]);
+
+  useInput(
+    () => onNothingToSetUp?.(),
+    { isActive: Boolean(state.nothingToSetUp && onNothingToSetUp) },
+  );
 
   return (
     <Box flexDirection="column" gap={0}>
@@ -102,6 +122,15 @@ export function Scan({ targetDir, onComplete }: ScanProps) {
 
         {state.error && (
           <StatusLine icon="✗" label={state.error} status="error" />
+        )}
+
+        {state.nothingToSetUp && (
+          <Box flexDirection="column" marginTop={1}>
+            {state.nothingToSetUp.map((line, i) => (
+              <Text key={i} color={i === 0 ? colors.error : undefined}>{line}</Text>
+            ))}
+            {onNothingToSetUp && <Text dimColor>{"\n"}  Press any key to continue...</Text>}
+          </Box>
         )}
       </Box>
     </Box>

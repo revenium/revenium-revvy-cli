@@ -1,6 +1,6 @@
 {
   "name": "@revenium/revvy",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Revvy — AI-powered assistant for Revenium",
   "type": "module",
   "bin": {

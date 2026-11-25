@@ -6,6 +6,7 @@ import { StatusLine } from "../../components/StatusLine.js";
 import { useCISetup, type CISetupChoice } from "./useCISetup.js";
 import type { CISetupResult } from "../../types/revvy-state.js";
 import { FEATURE_FLAGS } from "../../feature-flags.js";
+import { describeGeneratedFile } from "../../utils/generated-file.js";
 
 interface CISetupProps {
   targetDir: string;
@@ -93,11 +94,11 @@ export function CISetup({ targetDir, language, detectedProviders, onComplete, on
 
   return (
     <Box flexDirection="column" gap={1}>
-      {state.generatedFiles.map((file) => (
+      {state.results.map((r) => (
         <StatusLine
-          key={file}
+          key={r.file}
           icon="✓"
-          label={`Created ${file}`}
+          label={describeGeneratedFile(r)}
           status="success"
         />
       ))}
@@ -106,7 +107,7 @@ export function CISetup({ targetDir, language, detectedProviders, onComplete, on
         <StatusLine icon="✗" label={state.error} status="error" />
       )}
 
-      {state.generatedFiles.some((f) => f.includes("github")) && (
+      {state.results.some((r) => r.file.includes("github")) && (
         <Box flexDirection="column" marginTop={1}>
           <Text dimColor>
             {"  "}The GitHub Action will run <Text color={colors.primary}>revvy check</Text> on
@@ -115,7 +116,7 @@ export function CISetup({ targetDir, language, detectedProviders, onComplete, on
         </Box>
       )}
 
-      {state.generatedFiles.some((f) => f.includes("rules/revenium")) && (
+      {state.results.some((r) => r.file.includes("rules/revenium")) && (
         <Box flexDirection="column" marginTop={1}>
           <Text dimColor>
             {"  "}Editor rules will guide AI coding tools to always include
@@ -124,7 +125,7 @@ export function CISetup({ targetDir, language, detectedProviders, onComplete, on
         </Box>
       )}
 
-      {state.generatedFiles.some((f) => f.includes("revvy-agent")) && (
+      {state.results.some((r) => r.file.includes("revvy-agent")) && (
         <Box flexDirection="column" marginTop={1}>
           <Text dimColor>
             {"  "}Revvy agent prompt installed — AI assistants (Claude Code, Cursor)

@@ -23,3 +23,9 @@ test-project-go/
 # Revvy scratch artifacts (created when running revvy against a project)
 *.revvy-backup
 /tmp/revvy-*.log
+
+# Drift-detection engine, materialized locally from revvie-sdlc/drift-engine
+# via /revvy-api-drift-local — regenerated on demand, never tracked. A tracked
+# copy here would be overwritten by the next local run and dirty the tree.
+.claude/commands/revvy-api-drift.md
+.claude/commands/revvy-api-drift/

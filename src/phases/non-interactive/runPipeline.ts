@@ -16,24 +16,41 @@ import { buildDesignFromArgs, type CliDesignArgs } from "../consultation/design-
 import { writeMeteringDesign, getDesignFilename } from "../generate/utils/design-writer.js";
 import { writeCallSiteManifest, buildCallSiteManifest, getManifestFilename } from "../generate/utils/manifest-writer.js";
 import { writeModifiedFilesManifest } from "../generate/utils/modified-files-writer.js";
-import { safeWriteFile, fileExists, ensureDir } from "../../utils/fs-helpers.js";
-import { buildEnvContent } from "../../utils/env-helpers.js";
+import { safeReadFile } from "../../utils/fs-helpers.js";
+import { buildEnvContent, describeEnvWrite, writeMeteringEnv, type EnvWriteResult } from "../../utils/env-helpers.js";
+import { describeGeneratedFile, describeGeneratedGroup, writeGeneratedFile } from "../../utils/generated-file.js";
+import {
+  REVVY_IGNORED_ENTRIES,
+  describeGitignoreUpdate,
+  ensureRevvyFilesIgnored,
+  missingIgnoreEntries,
+  trackedFilesWarning,
+  type GitignoreUpdate,
+} from "../../utils/gitignore.js";
 import { detectPackageManager } from "../../utils/package-manager.js";
 import {
   instrumentCallSites,
   previewInstrumentation,
   getInstallCommand,
 } from "../instrument/instrumenter.js";
-import { GITHUB_ACTION_WORKFLOW, buildGitHubActionWorkflow } from "../ci-setup/templates/githubAction.js";
+import {
+  EDITOR_GROUP_LABEL,
+  GITHUB_WORKFLOW_PATH,
+  editorFilePaths,
+  githubWorkflowContent,
+  writeEditorFiles,
+  writeGitHubWorkflow,
+} from "../ci-setup/ci-files-writer.js";
+import type { GeneratedFileResult } from "../../utils/generated-file.js";
 import { writeMonorepoTodo, getMonorepoTodoFilename } from "./monorepo-todo-writer.js";
-import { getEditorRules } from "../ci-setup/templates/editorRules.js";
-import { AGENT_PROMPT } from "../ci-setup/templates/agentPrompt.js";
-import { readFile, writeFile, appendFile } from "fs/promises";
+import { NOTHING_SET_UP_EXIT_CODE, hasNothingToSetUp, nothingToSetUpLines } from "../scan/no-ai-calls.js";
 import { join, relative, resolve } from "path";
 import { createPatch } from "diff";
 import type { ScanResult } from "../../types/scan-result.js";
 
 import { configHelperFileName, renderConfigHelper } from "../generate/config-helper.js";
+import { CALL_SITE_NOTE, assessMeteringStatus } from "../ci-setup/check/metering-status.js";
+import { hasAutomaticTransform } from "../instrument/constants/transform-registry.js";
 
 export interface PipelineArgs {
   apiKey?: string;
@@ -104,10 +121,6 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
   const providerAgg = buildAllProviders(depResult.providers, callSiteResult.callSites, depResult.language);
   const allProviders = providerAgg.allProviders;
 
-  // Hoisted so the closing summary can tell "wired N call sites" apart from
-  // "wired none" — they are different outcomes and must not print the same text.
-  let instrumentedFiles = 0;
-
   const scanResult: ScanResult = {
     language: depResult.language,
     providers: allProviders,
@@ -127,6 +140,13 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
   const pmInfo = depResult.language === "node" ? await detectPackageManager(targetDir) : undefined;
   if (pmInfo?.isMonorepo) {
     log("ℹ", `Monorepo detected (${pmInfo.manager}) — file placements revvy suggests assume repo root; place \`.env\` and the config helper in your runtime workspace if different.`);
+  }
+
+  if (hasNothingToSetUp(scanResult)) {
+    console.log("");
+    for (const line of nothingToSetUpLines(scanResult, args.dryRun === true)) console.log(line);
+    process.exitCode = NOTHING_SET_UP_EXIT_CODE;
+    return;
   }
 
   // log auto-detection of customer ID when not explicitly provided
@@ -161,9 +181,14 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
   const utilityFile = configHelperFileName(design.detectedLanguage);
   const utilityContent = renderConfigHelper(design);
 
+  let gitignoreUpdate: GitignoreUpdate | undefined;
   if (!args.dryRun) {
-    await writeMeteringDesign(targetDir, design);
-    log("✓", `Created ${getDesignFilename(design.detectedLanguage)}`);
+    gitignoreUpdate = await ensureRevvyFilesIgnored(targetDir);
+    log("✓", describeGitignoreUpdate(gitignoreUpdate));
+    const trackedWarning = trackedFilesWarning(gitignoreUpdate);
+    if (trackedWarning) log("⚠", trackedWarning);
+
+    log("✓", describeGeneratedFile(await writeMeteringDesign(targetDir, design)));
 
     // NOTE: The call-site manifest is written AFTER `instrumentCallSites` runs
     // (further down the pipeline). That way the `line` field for each entry
@@ -174,8 +199,7 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
 
     if (!pmInfo?.isMonorepo) {
       // Single-package project — write helper directly. Layout is unambiguous.
-      await safeWriteFile(join(targetDir, utilityFile), utilityContent);
-      log("✓", `Created ${utilityFile}`);
+      log("✓", describeGeneratedFile(await writeGeneratedFile(targetDir, utilityFile, utilityContent)));
     } else {
       log("ℹ", `Skipped writing ${utilityFile} at repo root (monorepo) — see ${getMonorepoTodoFilename()} for placement instructions.`);
     }
@@ -188,7 +212,7 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
     // been edited yet). On a real run we re-scan after instrumentCallSites and
     // emit post-instrumentation lines; that's documented at the write site.
     const manifestContent = JSON.stringify(buildCallSiteManifest(scanResult, design), null, 2);
-    const envContent = buildEnvContent(args.apiKey ?? "");
+    const envContent = buildEnvContent(args.apiKey ?? "", args.baseUrl);
     // Redact API key in .env preview
     const envPreview = envContent.replace(/REVENIUM_METERING_API_KEY=.+/, "REVENIUM_METERING_API_KEY=rev_mk_***");
 
@@ -197,7 +221,7 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
     // In single-package: + config helper + .env = 4.
     // In monorepo: + revenium-monorepo-todo.md (helper + .env held back) = 3.
     const baseFiles = pmInfo?.isMonorepo ? 3 : 4;
-    const ciFileCount = args.skipCi ? 0 : 1 + 4 * 2;
+    const ciFileCount = args.skipCi ? 0 : 1 + editorFilePaths().length;
     const createdCount = baseFiles + ciFileCount;
     const totalModified = preview.totalFiles;
     const suffix = totalModified === 1 ? "file" : "files";
@@ -231,49 +255,31 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
     // and .env are intentionally held back (we'd be guessing the wrong location);
     // a `revenium-monorepo-todo.md` is written instead so the agent picks the right
     // workspace path. Reflect that here so the dry-run preview matches the real run.
-    const maxPreviewLines = 20;
+    // Files are printed in full: agents apply the dry run as the specification.
 
     if (!pmInfo?.isMonorepo) {
       console.log(`── Would create: ${utilityFile} (${ utilityContent.split("\n").length} lines) ${"─".repeat(Math.max(0, 40 - utilityFile.length))}`);
-      const utilityLines = utilityContent.split("\n");
-      const utilityPreview = utilityLines.slice(0, maxPreviewLines).join("\n");
-      console.log(utilityPreview);
-      if (utilityLines.length > maxPreviewLines) {
-        console.log(`... (${utilityLines.length - maxPreviewLines} more lines)`);
-      }
+      console.log(utilityContent);
       console.log("");
     }
 
     const designFileName = getDesignFilename(design.detectedLanguage);
     console.log(`── Would create: ${designFileName} ${"─".repeat(Math.max(0, 52 - designFileName.length))}`);
-    const designLines = designContent.split("\n");
-    const designPreview = designLines.slice(0, maxPreviewLines).join("\n");
-    console.log(designPreview);
-    if (designLines.length > maxPreviewLines) {
-      console.log(`... (${designLines.length - maxPreviewLines} more lines)`);
-    }
+    console.log(designContent);
     console.log("");
 
     const manifestFileName = getManifestFilename(design.detectedLanguage);
     console.log(`── Would create: ${manifestFileName} ${"─".repeat(Math.max(0, 52 - manifestFileName.length))}`);
-    const manifestLines = manifestContent.split("\n");
-    const manifestPreview = manifestLines.slice(0, maxPreviewLines).join("\n");
-    console.log(manifestPreview);
-    if (manifestLines.length > maxPreviewLines) {
-      console.log(`... (${manifestLines.length - maxPreviewLines} more lines)`);
-    }
+    console.log(manifestContent);
     console.log("");
 
     if (pmInfo?.isMonorepo) {
       // Preview the monorepo TODO file in place of .env + config helper.
       const { buildMonorepoTodoContent } = await import("./monorepo-todo-writer.js");
-      const todoContent = buildMonorepoTodoContent(design, pmInfo, args.apiKey ?? "");
+      const todoContent = buildMonorepoTodoContent(design, pmInfo, args.apiKey ?? "", args.baseUrl);
       const todoLines = todoContent.split("\n");
       console.log(`── Would create: revenium-monorepo-todo.md (${todoLines.length} lines) ${"─".repeat(20)}`);
-      console.log(todoLines.slice(0, maxPreviewLines).join("\n"));
-      if (todoLines.length > maxPreviewLines) {
-        console.log(`... (${todoLines.length - maxPreviewLines} more lines)`);
-      }
+      console.log(todoContent);
       console.log("");
       console.log(`(In a monorepo, \`.env\` and the config helper are NOT written at repo root — see \`revenium-monorepo-todo.md\` for guided placement.)`);
       console.log("");
@@ -283,28 +289,24 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
       console.log("");
     }
 
+    const unignored = missingIgnoreEntries(await safeReadFile(join(targetDir, ".gitignore")), REVVY_IGNORED_ENTRIES);
+    if (unignored.length > 0) {
+      console.log(`── Would add to .gitignore: ${unignored.join(", ")}`);
+      console.log("");
+    }
+
     if (!args.skipCi) {
-      const ghContent = pmInfo ? buildGitHubActionWorkflow(pmInfo) : GITHUB_ACTION_WORKFLOW;
-      const ghPath = ".github/workflows/revenium-check.yml";
-      console.log(`── Would create: ${ghPath} ${"─".repeat(Math.max(0, 40 - ghPath.length))}`);
-      const ghLines = ghContent.split("\n");
-      console.log(ghLines.slice(0, maxPreviewLines).join("\n"));
-      if (ghLines.length > maxPreviewLines) {
-        console.log(`... (${ghLines.length - maxPreviewLines} more lines)`);
-      }
+      const ghContent = githubWorkflowContent(pmInfo);
+      console.log(`── Would create: ${GITHUB_WORKFLOW_PATH} ${"─".repeat(Math.max(0, 40 - GITHUB_WORKFLOW_PATH.length))}`);
+      console.log(ghContent);
       console.log("");
 
-      const editorDirs = [".cursor", ".claude", ".gemini", ".codex"];
       console.log(`── Would create: editor rules + agent prompts ${"─".repeat(20)}`);
-      for (const dir of editorDirs) {
-        console.log(`   ${dir}/rules/revenium.md`);
-        console.log(`   ${dir}/revvy-agent.md`);
-      }
+      for (const file of editorFilePaths()) console.log(`   ${file}`);
       console.log("");
     }
   } else {
     const instrumentResult = await instrumentCallSites(targetDir, scanResult, design);
-    instrumentedFiles = instrumentResult.filesModified;
     log("✓", `Instrumented ${instrumentResult.filesModified} files (${instrumentResult.totalChanges} changes)`);
 
     // Re-scan to capture POST-instrumentation line numbers, then write the
@@ -317,27 +319,19 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
       ...scanResult,
       callSites: postScanCallSites.callSites,
     };
-    await writeCallSiteManifest(targetDir, postScanResult, design);
-    log("✓", `Created ${getManifestFilename(design.detectedLanguage)} (${postScanResult.callSites.length} call sites, post-instrumentation line numbers)`);
+    const manifestResult = await writeCallSiteManifest(targetDir, postScanResult, design);
+    log("✓", describeGeneratedFile(manifestResult, `(${postScanResult.callSites.length} call sites, post-instrumentation line numbers)`));
 
     // .env — single-package only. In a monorepo, the runtime .env almost
     // always lives inside a workspace (apps/<app>/.env) — guessing wrong
     // means metering silently fails because the runtime never reads our key.
     let envCreated = false;
+    let envWrite: EnvWriteResult | undefined;
     if (!pmInfo?.isMonorepo) {
-      const envPath = join(targetDir, ".env");
-      const envContent = buildEnvContent(args.apiKey as string);
-      if (await fileExists(envPath)) {
-        const existing = await readFile(envPath, "utf-8");
-        if (!existing.includes("REVENIUM_METERING_API_KEY")) {
-          await appendFile(envPath, envContent);
-          log("✓", "Added REVENIUM_METERING_API_KEY to .env");
-        }
-      } else {
-        await writeFile(envPath, envContent.trimStart(), "utf-8");
-        log("✓", "Created .env with REVENIUM_METERING_API_KEY");
-        envCreated = true;
-      }
+      const envResult = await writeMeteringEnv(targetDir, args.apiKey, args.baseUrl, { keyVerified: !keyUnverified });
+      log("✓", describeEnvWrite(envResult));
+      envCreated = envResult.created;
+      envWrite = envResult;
     } else {
       log("ℹ", `Skipped writing .env at repo root (monorepo) — see ${getMonorepoTodoFilename()} for placement instructions.`);
     }
@@ -345,13 +339,14 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
     // Monorepo placement TODO — written when the layout is ambiguous and the
     // agent (or a careful human) needs to decide where the helper + .env go.
     if (pmInfo?.isMonorepo) {
-      const todoPath = await writeMonorepoTodo({
+      const todoResult = await writeMonorepoTodo({
         targetDir,
         design,
         pmInfo,
         apiKey: args.apiKey as string,
+        baseUrl: args.baseUrl,
       });
-      log("✓", `Created ${todoPath.split("/").pop()} — read it before installing the SDK`);
+      log("✓", describeGeneratedFile(todoResult, "— read it before installing the SDK"));
     }
 
     // Track CI/editor-rules files so they can be included in the modified-files
@@ -362,43 +357,33 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
     // 6. CI setup (unless skipped) — runs BEFORE the modified-files manifest
     // so the manifest can capture the full file list.
     if (!args.skipCi) {
-      const ghPath = join(targetDir, ".github/workflows/revenium-check.yml");
-      await ensureDir(ghPath);
-      const ghContent = pmInfo ? buildGitHubActionWorkflow(pmInfo) : GITHUB_ACTION_WORKFLOW;
-      await writeFile(ghPath, ghContent, "utf-8");
-      log("✓", "Created .github/workflows/revenium-check.yml");
-      ciAndEditorFiles.push(".github/workflows/revenium-check.yml");
+      const workflowResult = await writeGitHubWorkflow(targetDir, pmInfo);
+      log("✓", describeGeneratedFile(workflowResult));
+      ciAndEditorFiles.push(workflowResult.file);
 
-      const editorRulesContent = getEditorRules(depResult.language, design.detectedProviders);
-      const editorDirs = [".cursor", ".claude", ".gemini", ".codex"];
-
-      for (const dir of editorDirs) {
-        const rulesPath = join(targetDir, dir, "rules/revenium.md");
-        await ensureDir(rulesPath);
-        await writeFile(rulesPath, editorRulesContent, "utf-8");
-        ciAndEditorFiles.push(`${dir}/rules/revenium.md`);
-
-        const agentPath = join(targetDir, dir, "revvy-agent.md");
-        await ensureDir(agentPath);
-        await writeFile(agentPath, AGENT_PROMPT, "utf-8");
-        ciAndEditorFiles.push(`${dir}/revvy-agent.md`);
+      const editorResults: GeneratedFileResult[] = [];
+      for await (const result of writeEditorFiles(targetDir, depResult.language, design.detectedProviders)) {
+        editorResults.push(result);
       }
-      log("✓", "Created editor rules + agent prompts (Cursor, Claude, Gemini, Codex)");
+      log("✓", describeGeneratedGroup(EDITOR_GROUP_LABEL, editorResults));
+      ciAndEditorFiles.push(...editorResults.map((r) => r.file));
     }
 
     // Modified files manifest — written LAST so it captures every file revvy
     // created in this run (helper, .env, CI workflow, editor rules, agent prompts,
     // monorepo TODO, etc). Agents and audit scripts can rely on this manifest
     // to know exactly what revvy touched.
-    const modifiedManifestPath = await writeModifiedFilesManifest(targetDir, {
+    const modifiedManifestResult = await writeModifiedFilesManifest(targetDir, {
       instrumentResult,
       language: design.detectedLanguage,
       envCreated,
+      envWrite,
       isMonorepo: pmInfo?.isMonorepo === true,
       extraGeneratedFiles: ciAndEditorFiles,
+      gitignoreUpdate,
     });
-    if (modifiedManifestPath) {
-      log("✓", "Created revenium-modified-files.json");
+    if (modifiedManifestResult) {
+      log("✓", describeGeneratedFile(modifiedManifestResult));
     }
   }
 
@@ -410,46 +395,20 @@ export async function runPipeline(args: PipelineArgs): Promise<void> {
   if (args.dryRun) {
     console.log("Dry-run preview complete. No files were written.");
   } else {
-    if (scanResult.callSites.length === 0) {
-      // Nothing to meter. Saying "metering active" here is the single most
-      // misleading thing revvy can do: an agent reads it and tells the user
-      // the job is done.
-      console.log("Setup incomplete — no AI calls found.");
-      console.log("");
-      console.log("  ✗ Nothing is being metered.");
-      console.log(`    Scanned ${scanResult.totalFiles} files and found no ${scanResult.language} AI SDK calls,`);
-      console.log("    so there was nothing to instrument.");
-      console.log("");
-      console.log("  Check that --target-dir points at the project that makes the AI calls,");
-      console.log("  and that --exclude / .revvyignore aren't filtering them out.");
-      process.exitCode = 1;
-      return;
-    }
-
     console.log("Setup complete!");
     console.log("");
-    if (instrumentedFiles > 0 && !keyUnverified) {
-      console.log("  ✓ Basic metering active");
-      console.log("    Tokens, model, and cost are tracked automatically via middleware imports.");
-    } else if (instrumentedFiles > 0) {
-      // Code is wired, but we never confirmed the key. Don't assert it works.
-      console.log("  ⚠ Instrumentation in place, but the metering key was never verified.");
-      console.log(`    Wired ${instrumentedFiles} file(s). Re-run once the API is reachable, or confirm`);
-      console.log("    the key yourself, before trusting that data is arriving.");
-    } else {
-      // Call sites exist but nothing was wired — the usual cause is a language
-      // revvy detects but has no transform for (Go today).
-      console.log("  ⚠ Metering is NOT active yet.");
-      console.log(`    Found ${scanResult.callSites.length} AI call(s) but wired 0 of them: revvy has no`);
-      console.log(`    automatic transform for ${scanResult.language}. The middleware has to be added by hand.`);
-      console.log("    See revenium-call-sites.json for every site that needs wiring.");
+    const meteringStatus = await assessMeteringStatus(targetDir, args.excludePatterns, keyUnverified);
+    for (const line of meteringStatus.lines) {
+      console.log(`  ${line.text}`);
     }
     console.log("");
-    console.log("  ℹ Revvy intentionally adds imports + a reference comment, but does NOT modify");
-    console.log("    your AI call sites — that's left to you (or your AI coding agent), because");
-    console.log("    static call-site mutation across the SDK matrix is error-prone.");
-    console.log("    See the comment block revvy inserted in the modified file(s) for the exact");
-    console.log("    usageMetadata to copy into your .create() calls.");
+    if (hasAutomaticTransform(scanResult.language)) {
+      for (const line of CALL_SITE_NOTE) console.log(`  ${line}`);
+    } else {
+      console.log("  ℹ Revvy modified none of your files. Wire each call with the generated helper:");
+      console.log(`    ${utilityFile} shows the call pattern for each provider, and each entry in`);
+      console.log(`    ${getManifestFilename(design.detectedLanguage)} carries the usageMetadataSnippet to pass at that call.`);
+    }
     console.log("");
     console.log("Next steps:");
     console.log("  1. Install the SDK (see install command above)");

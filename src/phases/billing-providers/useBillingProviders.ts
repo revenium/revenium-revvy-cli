@@ -42,12 +42,14 @@ export interface BillingProvidersState {
 
 interface UseBillingProvidersOptions {
   apiKey: string;
+  baseUrl?: string;
   teamId: string;
   onComplete: (result: BillingProvidersResult) => void;
 }
 
 export function useBillingProviders({
   apiKey,
+  baseUrl,
   teamId,
   onComplete,
 }: UseBillingProvidersOptions) {
@@ -105,6 +107,7 @@ export function useBillingProviders({
 
       const response = await createProviderCredential({
         apiKey,
+        baseUrl,
         provider: providerValue,
         credentialName: `${provider.label} Key`,
         description: "Connected via Revvy",
@@ -155,7 +158,7 @@ export function useBillingProviders({
         };
       });
     },
-    [apiKey, teamId],
+    [apiKey, baseUrl, teamId],
   );
 
   /** called from the results screen when the user presses any key. */

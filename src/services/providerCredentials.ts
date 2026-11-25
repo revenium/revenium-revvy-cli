@@ -7,6 +7,7 @@ import type { ApiResponse } from "./reveniumApi.js";
 
 interface CreateProviderCredentialParams {
   apiKey: string;
+  baseUrl?: string;
   provider: string;
   credentialName: string;
   description: string;
@@ -20,6 +21,7 @@ interface CreateProviderCredentialParams {
  */
 export async function createProviderCredential({
   apiKey,
+  baseUrl: baseUrlOverride,
   provider,
   credentialName,
   description,
@@ -33,7 +35,7 @@ export async function createProviderCredential({
   }>
 > {
   const baseUrl = (
-    process.env[ENV_VARS.BASE_URL] || REVENIUM_API_BASE_URL
+    baseUrlOverride || process.env[ENV_VARS.BASE_URL] || REVENIUM_API_BASE_URL
   ).replace(/\/+$/, "");
   const url = `${baseUrl}${REVENIUM_API_PATH_PREFIX}/provider-credentials`;
 

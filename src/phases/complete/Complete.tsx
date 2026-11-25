@@ -16,6 +16,7 @@ import {
 import { FEATURE_FLAGS } from "../../feature-flags.js";
 import { getInstallCommand } from "../instrument/instrumenter.js";
 import { detectPackageManager, type PackageManagerInfo } from "../../utils/package-manager.js";
+import { assessMeteringStatus, type MeteringStatusLine } from "../ci-setup/check/metering-status.js";
 
 interface Detected3PAgent {
   name: string;
@@ -49,6 +50,7 @@ interface CompleteProps {
   generatedFiles: string[];
   meteringDesign: MeteringDesign | null;
   billingProvidersResult: BillingProvidersResult | null;
+  keyUnverified?: boolean;
   onBackToMenu?: () => void;
 }
 
@@ -58,11 +60,19 @@ export function Complete({
   generatedFiles,
   meteringDesign,
   billingProvidersResult,
+  keyUnverified = false,
   onBackToMenu,
 }: CompleteProps) {
   const { exit } = useApp();
   const [detected3PAgents, setDetected3PAgents] = useState<Detected3PAgent[]>([]);
   const [pmInfo, setPmInfo] = useState<PackageManagerInfo | undefined>(undefined);
+  const [meteringStatus, setMeteringStatus] = useState<MeteringStatusLine[]>([]);
+  const hasInstrumentation = setupMode === "instrumentation" || setupMode === "both";
+
+  useEffect(() => {
+    if (!hasInstrumentation) return;
+    assessMeteringStatus(targetDir, undefined, keyUnverified).then((status) => setMeteringStatus(status.lines));
+  }, [targetDir, hasInstrumentation, keyUnverified]);
 
   useEffect(() => {
     if (FEATURE_FLAGS.CI_3P_AGENT_DETECTION) {
@@ -83,7 +93,6 @@ export function Complete({
   });
   const isBillingOnly = setupMode === "billing";
   const hasBilling = setupMode === "billing" || setupMode === "both";
-  const hasInstrumentation = setupMode === "instrumentation" || setupMode === "both";
 
   // Determine if billing had any successes
   const billingSuccessCount =
@@ -178,6 +187,20 @@ export function Complete({
               </Text>
             </Text>
           )}
+        </Box>
+      )}
+
+      {hasInstrumentation && meteringStatus.length > 0 && (
+        <Box flexDirection="column">
+          {meteringStatus.map((line, i) => (
+            <Text
+              key={i}
+              color={line.tone === "success" ? colors.success : line.tone === "warning" ? colors.warning : undefined}
+              dimColor={line.tone === "detail"}
+            >
+              {line.text}
+            </Text>
+          ))}
         </Box>
       )}
 

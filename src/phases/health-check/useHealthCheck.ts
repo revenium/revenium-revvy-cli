@@ -4,6 +4,7 @@ import { ReveniumApiClient } from "../../services/reveniumApi.js";
 
 interface UseHealthCheckOptions {
   apiKey?: string;
+  baseUrl?: string;
   onComplete: (result: HealthCheckResult) => void;
 }
 
@@ -16,7 +17,7 @@ interface HealthCheckState {
   errorMessage?: string;
 }
 
-export function useHealthCheck({ apiKey, onComplete }: UseHealthCheckOptions) {
+export function useHealthCheck({ apiKey, baseUrl, onComplete }: UseHealthCheckOptions) {
   const [state, setState] = useState<HealthCheckState>({
     step: apiKey ? "checking-connectivity" : "needs-key",
     connectivity: null,
@@ -36,7 +37,7 @@ export function useHealthCheck({ apiKey, onComplete }: UseHealthCheckOptions) {
     let cancelled = false;
 
     async function runChecks() {
-      const client = new ReveniumApiClient({ apiKey: apiKey! });
+      const client = new ReveniumApiClient({ apiKey: apiKey!, baseUrl });
 
       setState({
         step: "checking-connectivity",
@@ -79,9 +80,11 @@ export function useHealthCheck({ apiKey, onComplete }: UseHealthCheckOptions) {
       const result: HealthCheckResult = {
         apiKeyValid: keyResult.data?.valid ?? false,
         apiReachable: true,
+        keyVerified: keyResult.data?.unverified !== true,
         orgName: keyResult.data?.orgName,
         teamId: keyResult.data?.teamId,
         errorMessage: keyResult.error,
+        keyUnverified: keyResult.data?.unverified === true,
       };
 
       setState({

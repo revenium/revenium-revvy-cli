@@ -1,5 +1,4 @@
-import { join } from "path";
-import { safeWriteFile } from "../../../utils/fs-helpers.js";
+import { writeGeneratedFile, type GeneratedFileResult } from "../../../utils/generated-file.js";
 import type { MeteringDesign } from "../../../types/metering-design.js";
 
 /**
@@ -16,10 +15,7 @@ export function getDesignFilename(language?: string): string {
 export async function writeMeteringDesign(
   targetDir: string,
   design: MeteringDesign
-): Promise<string> {
-  const filename = getDesignFilename(design.detectedLanguage);
-  const filePath = join(targetDir, filename);
+): Promise<GeneratedFileResult> {
   const content = JSON.stringify(design, null, 2) + "\n";
-  await safeWriteFile(filePath, content);
-  return filePath;
+  return writeGeneratedFile(targetDir, getDesignFilename(design.detectedLanguage), content);
 }

@@ -10,8 +10,10 @@
  *     method-chain API, metadata as 2nd arg of .create())
  *   - Anthropic → auto-patches the standard SDK on import; metadata is passed
  *     INLINE as a `usageMetadata` field on .messages.create({...})
- *   - Google GenAI / Vertex AI → controller pattern; metadata as 3rd arg
- *     (Vertex: before the optional projectId / location arguments)
+ *   - Google GenAI (@google/genai) → this file's import meters your own client;
+ *     metadata is passed INLINE as `usageMetadata` on generateContent({...})
+ *   - Older @google/generative-ai and @google-cloud/vertexai → controller
+ *     pattern; metadata as 3rd arg (Vertex: before projectId / location)
  *   - LiteLLM proxy → initialize() patches fetch; metadata as x-revenium-* headers
  *
  * Required env vars (loaded from .env automatically):
@@ -89,12 +91,8 @@ export const googleAI = new GoogleGenAIController();
 export const vertexAI = new VertexAIController();
 
 <%_ } -%>
-/**
- * Build the per-request `usageMetadata` from your application's auth
- * context. Pass the result wherever the SDK accepts metadata (see provider
- * examples below).
- */
-export function createUsageMetadata(context: {
+/** The business context of one AI call. */
+export interface UsageMetadataContext {
 <%_ if (isApiKey) { -%>
   /** API key identifying the consumer (becomes the Revenium subscriber). */
   apiKey: string;
@@ -129,9 +127,22 @@ export function createUsageMetadata(context: {
   agenticJobId?: string;
   /** Human-readable Job name. */
   agenticJobName?: string;
+  /** The Job's workflow category (e.g. "loan-application-review"); a Job needs one before it can take outcome metrics. */
+  agenticJobType?: string;
+  /** Version of the Job definition (e.g. "2026-10"), not of the agent code. */
+  agenticJobVersion?: string;
+  /** Where the call runs ("production", "staging"); overrides REVENIUM_ENVIRONMENT for this call. */
+  environment?: string;
   /** External ticket/issue ID for cost attribution (max 256 chars). */
   ticketId?: string;
-}): UsageMetadata {
+}
+
+/**
+ * Build the per-request `usageMetadata` from your application's auth
+ * context. Pass the result wherever the SDK accepts metadata (see provider
+ * examples below).
+ */
+export function createUsageMetadata(context: UsageMetadataContext): UsageMetadata {
   return {
 <%_ if (isApiKey) { -%>
     subscriber: {
@@ -151,6 +162,9 @@ export function createUsageMetadata(context: {
     traceId: context.traceId,
     agenticJobId: context.agenticJobId,
     agenticJobName: context.agenticJobName,
+    agenticJobType: context.agenticJobType,
+    agenticJobVersion: context.agenticJobVersion,
+    environment: context.environment,
     ticketId: context.ticketId,
   };
 }
@@ -162,21 +176,7 @@ export function createUsageMetadata(context: {
  */
 export const agentMetadata = {
 <%_ for (const agent of agents) { -%>
-  "<%- agent.name %>": (context: {
-<%_ if (isApiKey) { -%>
-    apiKey: string;
-<%_ } else { -%>
-    customerId: string;
-<%_ } -%>
-<%_ if (products.length > 0) { -%>
-    product?: <%- products.map(p => `"${p.name}"`).join(' | ') %>;
-<%_ } -%>
-    taskType?: string;
-    traceId?: string;
-    agenticJobId?: string;
-    agenticJobName?: string;
-    ticketId?: string;
-  }) =>
+  "<%- agent.name %>": (context: Omit<UsageMetadataContext, "agent">) =>
     createUsageMetadata({ ...context, agent: "<%- agent.name %>" }),
 <%_ } -%>
 } as const;
@@ -264,6 +264,22 @@ export const agentMetadata = {
 /*
  * --- Google GenAI ---
  *
+ * Importing this file meters your own `GoogleGenAI` client (@google/genai,
+ * @revenium/middleware >= 2.1.0) — keep your calls and add usageMetadata:
+ *
+ *   const response = await ai.models.generateContent({
+ *     model: "gemini-2.0-flash-001",
+ *     contents: "What's the weather like?",
+ *     usageMetadata: createUsageMetadata({ ... }),
+ *   });
+ *
+ * Load this file before the first Gemini call, the same way the app loads
+ * @google/genai (both `import` or both `require`). Remove any
+ * trackGoogleUsageAsync() call, or each request is recorded twice.
+ *
+ * On the older @google/generative-ai SDK, which the import does not meter,
+ * route calls through the controller instead:
+ *
  *   const response = await googleAI.createChat(
  *     ["What's the weather like?"],
  *     "gemini-2.0-flash-001",
@@ -281,7 +297,7 @@ export const agentMetadata = {
 <%_ } -%>
 <%_ if (hasVertex) { -%>
 /*
- * --- Vertex AI --- (same shape as Google GenAI)
+ * --- Vertex AI on @google-cloud/vertexai --- (controller pattern, same shape as googleAI.createChat)
  *
  *   const response = await vertexAI.createChat(["..."], "gemini-2.0-flash-001", { ... });
  */

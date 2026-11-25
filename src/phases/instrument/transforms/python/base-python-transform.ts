@@ -3,8 +3,9 @@
  * Import insertion, usage_metadata injection, and comment block generation.
  */
 
-import type { MeteringDesign } from "../base-transform.js";
-import { pythonValue } from "../base-transform.js";
+import type { MeteringDesign, TransformContext, TransformResult } from "../base-transform.js";
+import { pythonValue, insertBlockAtLine } from "../base-transform.js";
+import { importedPythonModules, importsPythonModule } from "../../../scan/detectors/python-activation.js";
 import { getDesignFilename } from "../../../generate/utils/design-writer.js";
 import { pickAgentForFile, pickJobNamePlaceholder } from "../shared-helpers.js";
 
@@ -15,9 +16,30 @@ export { hasImport } from "../base-transform.js";
 // ── Python import helpers ───────────────────────────────────────────
 
 /**
+ * Loads `.env` ahead of the first middleware import: revenium_middleware reads
+ * REVENIUM_METERING_API_KEY when it is imported, and revvy writes the key to
+ * `.env`, so without this the SDK starts with metering disabled. The
+ * ImportError branch keeps an app that ships without python-dotenv (the key
+ * set in the real environment) running.
+ */
+const PYTHON_ENV_BOOTSTRAP = [
+  `try:  # Revenium: revenium_middleware reads REVENIUM_METERING_API_KEY on import, so load .env first`,
+  `    from dotenv import load_dotenv`,
+  `    load_dotenv()`,
+  `except ImportError:  # without python-dotenv the key must already be in the environment`,
+  `    pass`,
+];
+
+const FIRST_MIDDLEWARE_IMPORT = /^(?:import|from)\s+revenium_middleware\w*\b/;
+// Only a module-level statement runs before the import below it; a call inside
+// a function or class body runs whenever that is called, possibly never.
+const MODULE_LEVEL_LOAD_DOTENV = /^(?![\s#]|def\s|async\s+def\s|class\s|@)[^#]*\bload_dotenv\s*\(/;
+
+/**
  * Finds the last import/from line in Python source and returns the index of
  * the final line of the last import statement (including multi-line
- * `from X import (\n  A,\n  B,\n)` forms).
+ * `from X import (\n  A,\n  B,\n)` forms). revvy's .env bootstrap counts as
+ * part of the import section, so a later middleware import lands after it.
  * Returns -1 if no imports found.
  */
 export function findLastPythonImportIndex(lines: string[]): number {
@@ -39,7 +61,10 @@ export function findLastPythonImportIndex(lines: string[]): number {
       continue;
     }
 
-    if (line.startsWith("import ") || line.startsWith("from ")) {
+    if (lines[i] === PYTHON_ENV_BOOTSTRAP[0]) {
+      i += PYTHON_ENV_BOOTSTRAP.length - 1;
+      lastImportIndex = i;
+    } else if (line.startsWith("import ") || line.startsWith("from ")) {
       lastImportIndex = i;
       // Check if this opens a multi-line import: has '(' but no matching ')'
       if (codePart.includes("(") && !codePart.includes(")")) {
@@ -53,17 +78,63 @@ export function findLastPythonImportIndex(lines: string[]): number {
 }
 
 /**
- * Inserts a Python import line after the last existing import.
+ * Inserts revvy's .env bootstrap right before the file's first top-level
+ * revenium_middleware import, unless revvy's bootstrap or a module-level
+ * load_dotenv() call already runs ahead of it.
  */
-export function insertPythonImport(content: string, importLine: string): string {
+function loadEnvBeforeMiddleware(content: string): string {
   const lines = content.split("\n");
-  const idx = findLastPythonImportIndex(lines);
-  if (idx >= 0) {
-    lines.splice(idx + 1, 0, importLine, "");
-  } else {
-    lines.unshift(importLine, "");
-  }
+  const firstMiddlewareImport = lines.findIndex((line) => FIRST_MIDDLEWARE_IMPORT.test(line));
+  if (firstMiddlewareImport < 0) return content;
+  const loadsEnvAlready = lines
+    .slice(0, firstMiddlewareImport)
+    .some((line) => line === PYTHON_ENV_BOOTSTRAP[0] || MODULE_LEVEL_LOAD_DOTENV.test(line));
+  if (loadsEnvAlready) return content;
+  lines.splice(firstMiddlewareImport, 0, ...PYTHON_ENV_BOOTSTRAP);
   return lines.join("\n");
+}
+
+export interface PythonMiddleware {
+  /** Module whose import activates the patch, e.g. `revenium_middleware.openai`. */
+  module: string;
+  importLine: string;
+  /** Key into the reference-block call templates. */
+  commentKey: string;
+  label: string;
+  /** Other modules whose import means the file is already instrumented. */
+  alsoInstrumentedBy?: string[];
+}
+
+const ENV_CHANGE = "Loaded .env before the Revenium middleware import, which reads REVENIUM_METERING_API_KEY when imported";
+
+/**
+ * The whole Python transform: one middleware import (the patch is process-wide)
+ * plus a commented usage_metadata reference, with .env loaded ahead of it.
+ */
+export function instrumentPythonMiddleware(
+  content: string,
+  ctx: TransformContext,
+  middleware: PythonMiddleware,
+): TransformResult {
+  const modules = importedPythonModules(content);
+  const instrumented = [middleware.module, ...(middleware.alsoInstrumentedBy ?? [])].some((module) => importsPythonModule(modules, module));
+  if (instrumented) {
+    const withEnv = loadEnvBeforeMiddleware(content);
+    return withEnv === content
+      ? { content, modified: false, changes: [`Already instrumented with Revenium (${middleware.label})`] }
+      : { content: withEnv, modified: true, changes: [ENV_CHANGE] };
+  }
+
+  const lines = content.split("\n");
+  const block = [middleware.importLine, buildPythonCommentBlock(ctx.design, middleware.commentKey, ctx.filePath)];
+  const inserted = insertBlockAtLine(lines, findLastPythonImportIndex(lines) + 1, block).join("\n");
+  const result = loadEnvBeforeMiddleware(inserted);
+  const changes = [
+    `Added ${middleware.module} import (auto-patches)`,
+    "Added usage_metadata reference (commented — uncomment to enable business context)",
+    ...(result === inserted ? [] : [ENV_CHANGE]),
+  ];
+  return { content: result, modified: true, changes };
 }
 
 // ── Python usage_metadata builder ───────────────────────────────────
@@ -221,17 +292,6 @@ const PYTHON_FOOTER = [
   `#   analytics (= the AI Outcomes feature). Revvy intentionally leaves`,
   `#   call-site edits to you — see .claude/revvy-agent.md.`,
 ].join("\n");
-
-/**
- * Inserts a Python import line after the last existing import, then collapses
- * any triple-or-more consecutive newlines to two (= one blank line). This
- * prevents a double blank line when the source already has a blank line between
- * imports and the first non-import statement.
- */
-export function insertPythonBlock(content: string, importLine: string): string {
-  const inserted = insertPythonImport(content, importLine);
-  return inserted.replace(/\n{3,}/g, "\n\n");
-}
 
 // pickAgentForFile, pickJobNamePlaceholder, normalizeForMatch → shared-helpers.ts
 

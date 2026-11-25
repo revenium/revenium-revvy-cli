@@ -65,12 +65,14 @@ export function formatCheckResult(result: CheckResult, ci: boolean, warnOnly: bo
         );
       }
     } else {
-      // group by provider so the suggestion appears once per provider
+      // One group per provider and fix, so each distinct suggestion is shown once
+      // and calls that need a different fix never hide behind another's.
       const byProvider = new Map<string, typeof result.unwrapped>();
       for (const site of result.unwrapped) {
-        const group = byProvider.get(site.provider) ?? [];
+        const key = `${site.provider}\u0000${site.suggestion.replace(/ in this file$/, "")}`;
+        const group = byProvider.get(key) ?? [];
         group.push(site);
-        byProvider.set(site.provider, group);
+        byProvider.set(key, group);
       }
 
       const DISPLAY_NAMES: Record<string, string> = {
@@ -84,7 +86,8 @@ export function formatCheckResult(result: CheckResult, ci: boolean, warnOnly: bo
         litellm: "LiteLLM",
       };
 
-      for (const [provider, sites] of byProvider) {
+      for (const sites of byProvider.values()) {
+        const provider = sites[0]!.provider;
         const label = DISPLAY_NAMES[provider] ?? provider;
         lines.push(`  ${label} (${sites.length} call${sites.length === 1 ? "" : "s"}):`);
         for (const site of sites) {
@@ -224,6 +227,7 @@ export function formatCheckResultJson(result: CheckResult, warnOnly: boolean = f
       wrappedCount: result.wrappedCount,
       unwrappedCount: result.unwrappedCount,
       withMetadataCount: result.withMetadataCount,
+      excludedCount: result.excludedCount,
       instrumentationDetected: result.instrumentationDetected,
       unwrapped: result.unwrapped.map((s) => ({
         file: s.filePath,
@@ -231,6 +235,7 @@ export function formatCheckResultJson(result: CheckResult, warnOnly: boolean = f
         provider: s.provider,
         method: s.method,
         operationType: s.operationType,
+        reason: s.reason,
         suggestion: s.suggestion,
       })),
       providersWithoutMiddleware: result.providersWithoutMiddleware.map((p) => ({

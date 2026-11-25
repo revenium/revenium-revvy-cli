@@ -89,9 +89,13 @@ export interface BillingProvidersResult {
 export interface HealthCheckResult {
   apiKeyValid: boolean;
   apiReachable: boolean;
+  /** False when the key looked valid but the API never confirmed it. */
+  keyVerified?: boolean;
   orgName?: string;
   teamId?: string;
   errorMessage?: string;
+  /** The key looked well-formed but the metering API never answered, so it was not verified. */
+  keyUnverified?: boolean;
 }
 
 export interface InstrumentationSummary {
