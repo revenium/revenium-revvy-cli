@@ -3,6 +3,7 @@ export interface KeyValidationRule {
   pattern?: RegExp;
   requiredJsonKeys?: string[];
   jsonKeyPrefix?: { key: string; prefix: string };
+  jsonKeyPattern?: { key: string; pattern: RegExp };
   formatHint: string;
   requiresAdmin: boolean;
 }
@@ -50,6 +51,28 @@ export const KEY_VALIDATION_RULES: Record<string, KeyValidationRule> = {
       'Azure credentials must be JSON: {"tenantId":"...","clientId":"...","clientSecret":"...","subscriptionId":"..."}',
     requiresAdmin: false,
   },
+  openai_enterprise: {
+    requiredJsonKeys: ["adminKey", "workspaceId"],
+    jsonKeyPrefix: { key: "adminKey", prefix: "sk-admin-" },
+    jsonKeyPattern: {
+      key: "workspaceId",
+      pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    },
+    formatHint:
+      'ChatGPT Enterprise credentials must be JSON with a workspace admin key and the workspace UUID: {"adminKey":"sk-admin-...","workspaceId":"12345678-1234-1234-1234-123456789012"}',
+    requiresAdmin: false,
+  },
+  cursor: {
+    pattern: /^\S{16,}$/,
+    formatHint: "Cursor team API keys are an opaque token of at least 16 characters, with no spaces.",
+    requiresAdmin: false,
+  },
+  github_copilot: {
+    requiredJsonKeys: ["token", "orgName"],
+    formatHint:
+      'GitHub Copilot credentials must be JSON: {"token":"github_pat_...","orgName":"your-github-org"}',
+    requiresAdmin: false,
+  },
   vertex: {
     requiredJsonKeys: ["type", "project_id", "private_key"],
     formatHint:
@@ -69,8 +92,11 @@ function hasJsonKeys(raw: string, rule: KeyValidationRule): boolean {
   const obj = parsed as Record<string, unknown>;
   const present = (key: string) => typeof obj[key] === "string" && obj[key].trim() !== "";
   if (!(rule.requiredJsonKeys ?? []).every(present)) return false;
-  if (rule.jsonKeyPrefix) {
-    return String(obj[rule.jsonKeyPrefix.key]).startsWith(rule.jsonKeyPrefix.prefix);
+  if (rule.jsonKeyPrefix && !String(obj[rule.jsonKeyPrefix.key]).startsWith(rule.jsonKeyPrefix.prefix)) {
+    return false;
+  }
+  if (rule.jsonKeyPattern && !rule.jsonKeyPattern.pattern.test(String(obj[rule.jsonKeyPattern.key]))) {
+    return false;
   }
   return true;
 }

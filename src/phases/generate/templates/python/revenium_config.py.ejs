@@ -90,6 +90,9 @@ def create_usage_metadata(
     agent_version: Optional[str] = None,
 <%_ } -%>
     subagent_type: Optional[str] = None,
+    agentic_job_type: Optional[str] = None,
+    agentic_job_version: Optional[str] = None,
+    environment: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Build the per-request `usage_metadata` dict from your application's
@@ -121,6 +124,9 @@ def create_usage_metadata(
         agent_version: Optional release of the agent code that made the call (max 64 chars).
 <%_ } -%>
         subagent_type: Optional sub-agent that made the call in a multi-agent system (max 128 chars, [A-Za-z0-9._:-]).
+        agentic_job_type: Optional workflow category of the Job (e.g. "loan-application-review"); a Job needs one before it can take outcome metrics.
+        agentic_job_version: Optional version of the Job definition (e.g. "2026-10"), not of the agent code.
+        environment: Optional runtime environment ("production", "staging"); overrides REVENIUM_ENVIRONMENT for this call.
     """
     metadata: Dict[str, Any] = {}
 
@@ -152,6 +158,12 @@ def create_usage_metadata(
         metadata["agentic_job_id"] = agentic_job_id
     if agentic_job_name:
         metadata["agentic_job_name"] = agentic_job_name
+    if agentic_job_type:
+        metadata["agentic_job_type"] = agentic_job_type
+    if agentic_job_version:
+        metadata["agentic_job_version"] = agentic_job_version
+    if environment:
+        metadata["environment"] = environment
     if ticket_id:
         metadata["ticket_id"] = ticket_id
 

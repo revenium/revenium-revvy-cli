@@ -45,7 +45,7 @@ export const BILLING_PROVIDERS: BillingProviderInfo[] = [
     credentialType: "json_credentials",
     placeholder: "Paste your service account JSON here...",
     helpText:
-      "Upload your Google Cloud service account JSON. Requires 'BigQuery Data Viewer' and 'BigQuery Job User' roles.",
+      'Paste the service account JSON key and add "billing_dataset": "<dataset>" naming the BigQuery dataset your standard usage cost export writes to (without it Revenium looks for "billing_export"). The service account needs BigQuery Data Viewer on that dataset and BigQuery Job User on its project, and the Cloud Billing API must be enabled.',
   },
   {
     value: "openrouter",
@@ -78,6 +78,30 @@ export const BILLING_PROVIDERS: BillingProviderInfo[] = [
     placeholder: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:xxxxxxxxxxxxxxxx",
     helpText:
       "Provide a fal.ai key created with the FULL preset, or a custom key with billing:usage:read, auth:keys:read, account:users:read and models:metrics:read. A legacy ADMIN key also works; a BILLING-only key syncs spend but reports 0 requests.",
+  },
+  {
+    value: "openai_enterprise",
+    label: "ChatGPT Enterprise",
+    credentialType: "json_credentials",
+    placeholder: '{"adminKey":"sk-admin-...","workspaceId":"12345678-1234-1234-1234-123456789012"}',
+    helpText:
+      "A workspace owner or admin creates an admin key in the OpenAI Admin Console (admin.openai.com, Credentials → Admin keys) for this workspace, with Custom permissions and \"Enterprise analytics usage\" set to Read. An OpenAI API Platform admin key is refused. One connection per workspace.",
+  },
+  {
+    value: "cursor",
+    label: "Cursor",
+    credentialType: "api_key",
+    placeholder: "Cursor team API key",
+    helpText:
+      "A Cursor team admin creates an API key with team usage read access at cursor.com/dashboard → Settings → Team → API Keys. Revenium reads the team's billed spend.",
+  },
+  {
+    value: "github_copilot",
+    label: "GitHub Copilot",
+    credentialType: "json_credentials",
+    placeholder: '{"token":"github_pat_...","orgName":"your-github-org"}',
+    helpText:
+      'Provide JSON with a fine-grained token whose resource owner is your organization, with "Organization Copilot metrics" and "Administration" read-only, plus the organization name.',
   },
 ];
 
@@ -144,6 +168,24 @@ export const PROVIDER_SYNC_TIMES: Record<string, ProviderSyncMetadata> = {
     expectedTimeRange: "10 minutes",
     historicalSyncMessage:
       "fal.ai data typically appears within 10 minutes.",
+  },
+  cursor: {
+    expectedMinutes: 10,
+    expectedTimeRange: "10 minutes",
+    historicalSyncMessage:
+      "Cursor usage is read every 5 minutes; the first figures typically appear within 10 minutes.",
+  },
+  github_copilot: {
+    expectedMinutes: 1440,
+    expectedTimeRange: "24 hours",
+    historicalSyncMessage:
+      "GitHub publishes Copilot usage about a day late and Revenium refreshes it once daily, so today's numbers appear tomorrow.",
+  },
+  openai_enterprise: {
+    expectedMinutes: 1440,
+    expectedTimeRange: "24 hours",
+    historicalSyncMessage:
+      "ChatGPT Enterprise reports usage by day, so data can take up to 24 hours to appear.",
   },
   default: {
     expectedMinutes: 10,

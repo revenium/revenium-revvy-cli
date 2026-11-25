@@ -9,9 +9,21 @@ import { GO_PATTERNS } from "../../scan/patterns/go-patterns.js";
 import { getPatternsForLanguage } from "../../scan/patterns/index.js";
 import { loadConfig, type ReveniumCheckConfig } from "./loadConfig.js";
 import { detectMultiEntryPointWarnings, type EntryPointWarning } from "./entry-point-detector.js";
+import { detectPythonMiddlewareActivation, type PythonMiddlewareActivation } from "../../scan/detectors/python-activation.js";
+
+/**
+ * `provider-sdk-client`: the middleware is in place, but the call is made on
+ * the provider SDK's own client, which a wrapper-pattern middleware never
+ * meters. `no-wrapped-equivalent`: the call is one the wrapped client cannot
+ * make, so Revenium cannot meter it. `no-middleware`: nothing that runs loads
+ * the middleware for it.
+ */
+export type UnmeteredReason = "provider-sdk-client" | "no-wrapped-equivalent" | "no-middleware";
+import { countGoCallsWithUsageMetadata } from "./go-usage-metadata.js";
 
 export interface UnwrappedCallSite extends CallSite {
   suggestion: string;
+  reason: UnmeteredReason;
 }
 
 export interface ProviderWithoutMiddleware {
@@ -33,7 +45,10 @@ export interface InstrumentationRegression {
 export interface CheckResult {
   language: SupportedLanguage;
   totalCallSites: number;
+  /** Calls that pass the check: metered ones plus `excludedCount`. */
   wrappedCount: number;
+  /** Calls that pass only because `.reveniumrc` ignores their file or skips their provider. */
+  excludedCount: number;
   unwrappedCount: number;
   unwrapped: UnwrappedCallSite[];
   /** Number of wrapped calls that also have usage_metadata (business context) */
@@ -67,46 +82,108 @@ function isIgnored(filePath: string, ignorePatterns: string[]): boolean {
   return false;
 }
 
+type Verdict = { metered: true } | { metered: false; reason: UnmeteredReason; suggestion: string };
+
 function classifyCallSites(
   callSites: CallSite[],
-  instrumentedFiles: Map<string, Set<string>>,
-  hasReveniumSdk: boolean,
   config: ReveniumCheckConfig,
-  language: SupportedLanguage,
-): { wrapped: CallSite[]; unwrapped: UnwrappedCallSite[] } {
+  judge: (site: CallSite) => Verdict,
+): { wrapped: CallSite[]; excludedCount: number; unwrapped: UnwrappedCallSite[] } {
   const wrapped: CallSite[] = [];
   const unwrapped: UnwrappedCallSite[] = [];
+  let excludedCount = 0;
 
   for (const site of callSites) {
-    if (isIgnored(site.filePath, config.ignore ?? [])) {
+    if (isIgnored(site.filePath, config.ignore ?? []) || config.skipProviders?.includes(site.provider)) {
       wrapped.push(site);
+      excludedCount++;
       continue;
     }
-
-    if (config.skipProviders?.includes(site.provider)) {
-      wrapped.push(site);
-      continue;
-    }
-
-    const fileInstrumentation = instrumentedFiles.get(site.filePath);
-    const isWrapped =
-      hasReveniumSdk &&
-      fileInstrumentation != null &&
-      (fileInstrumentation.has(site.provider) || fileInstrumentation.has("*"));
-
-    if (isWrapped) {
+    const verdict = judge(site);
+    if (verdict.metered) {
       wrapped.push(site);
     } else {
-      unwrapped.push({
-        ...site,
-        suggestion: hasReveniumSdk
-          ? `Add Revenium instrumentation import for ${site.provider} in this file`
-          : `Install ${reveniumSdkFor(language, site.provider)} and add instrumentation for ${site.provider}`,
-      });
+      unwrapped.push({ ...site, reason: verdict.reason, suggestion: verdict.suggestion });
     }
   }
 
-  return { wrapped, unwrapped };
+  return { wrapped, excludedCount, unwrapped };
+}
+
+const SDK_CLIENT_FIXES: Record<string, string> = {
+  openai:
+    "Calls on the SDK's own OpenAI client are not metered: @revenium/middleware/openai wraps the client, it does not patch it. Call the wrapped client instead (the `openai` export of the generated revenium-config helper, or GetClient() after Initialize()) with method chains and the metadata as the 2nd argument: openai.chat().completions().create(params, metadata). A client pointed at api.perplexity.ai takes GetClient() from @revenium/middleware/perplexity instead. revvy marks each client it can resolve with a TODO(revenium) comment",
+  "azure-openai":
+    "Calls on the SDK's own Azure OpenAI client are not metered: @revenium/middleware/openai wraps the client (it detects Azure from its config), it does not patch it. Call the wrapped client instead (the `openai` export of the generated revenium-config helper, or GetClient() after Initialize()): openai.chat().completions().create(params, metadata)",
+  "fal-ai":
+    "Calls on @fal-ai/client are not metered: @revenium/middleware/fal wraps the client, it does not patch it. Call GetClient() from @revenium/middleware/fal after Initialize(), with the metadata as the last argument of run / subscribe / stream",
+};
+
+function providerSdkClientVerdict(provider: string): Verdict {
+  return {
+    metered: false,
+    reason: "provider-sdk-client",
+    suggestion: SDK_CLIENT_FIXES[provider] ?? SDK_CLIENT_FIXES.openai!,
+  };
+}
+
+function noWrappedEquivalentVerdict(site: CallSite): Verdict {
+  return {
+    metered: false,
+    reason: "no-wrapped-equivalent",
+    suggestion: `The Revenium wrapped client has no equivalent of ${site.method}, so this call cannot be metered. If that is acceptable, list the file under \`ignore\` (or the provider under \`skipProviders\`) in .reveniumrc`,
+  };
+}
+
+/**
+ * Node and Go: a call counts as metered when its own file imports the
+ * middleware, or, for a wrapper-pattern provider, when it is made on the
+ * wrapped client (which may come from another module, such as the generated
+ * helper). Anthropic's Node patch is process-wide in principle, but it depends
+ * on import order and does not reliably reach workers, tests or isolated
+ * scripts.
+ */
+function perFileImportJudge(
+  instrumentedFiles: Map<string, Set<string>>,
+  hasReveniumSdk: boolean,
+  language: SupportedLanguage,
+): (site: CallSite) => Verdict {
+  return (site) => {
+    if (site.client === "no-wrapped-equivalent") return noWrappedEquivalentVerdict(site);
+    if (!hasReveniumSdk) {
+      return {
+        metered: false,
+        reason: "no-middleware",
+        suggestion: `Install ${reveniumSdkFor(language, site.provider)} and add instrumentation for ${site.provider}`,
+      };
+    }
+    if (site.client === "provider-sdk") return providerSdkClientVerdict(site.provider);
+    const fileInstrumentation = instrumentedFiles.get(site.filePath);
+    const importedHere = fileInstrumentation?.has(site.provider) || fileInstrumentation?.has("*");
+    if (site.client === "revenium-wrapped" || importedHere) return { metered: true };
+    return {
+      metered: false,
+      reason: "no-middleware",
+      suggestion: `Add Revenium instrumentation import for ${site.provider} in this file`,
+    };
+  };
+}
+
+function pythonActivationJudge(
+  activation: PythonMiddlewareActivation,
+  hasReveniumSdk: boolean,
+): (site: CallSite) => Verdict {
+  return (site) => {
+    const meteredAsPerplexity = activation.activated.has("perplexity") && activation.perplexityClientCalls.has(`${site.filePath}:${site.lineNumber}`);
+    if (hasReveniumSdk && (activation.activated.has(site.provider) || meteredAsPerplexity)) return { metered: true };
+    const importLine = instrumentationImportFor("python", site.provider) ?? "import revenium_middleware";
+    const suggestion = activation.onlyInUnimportedHelper.has(site.provider)
+      ? `revenium_config.py has \`${importLine}\`, but no module imports revenium_config, so the patch never loads. Import revenium_config (or add \`${importLine}\`) once in the module that starts your app; the patch is process-wide and then covers every file`
+      : hasReveniumSdk
+        ? `No module in the project runs \`${importLine}\`. Add it once in the module that starts your app, before the first ${site.provider} call; the patch is process-wide and then covers every file`
+        : `Install revenium-python-sdk and add \`${importLine}\` once in the module that starts your app`;
+    return { metered: false, reason: "no-middleware", suggestion };
+  };
 }
 
 /**
@@ -229,45 +306,23 @@ export async function runCheck(targetDir: string, excludePatterns?: string[]): P
     instrumentedFiles.get(site.filePath)!.add(site.provider);
   }
 
-  // Monkey-patching SDKs (Python only):
-  // If the middleware is imported ANYWHERE in the project, all calls to that
-  // provider are covered globally — the import patches the SDK prototype.
-  //
-  // For Node: ALL providers (including Anthropic) require per-file imports.
-  // While Anthropic technically uses monkey-patching, it depends on import
-  // order and doesn't work reliably in workers, tests, or isolated scripts.
-  const globallyPatched = new Set<string>();
-  for (const [, providers] of instrumentedFiles) {
-    for (const p of providers) {
-      if (language === "python") {
-        globallyPatched.add(p);
-      }
-    }
-  }
-  if (globallyPatched.size > 0) {
-    for (const site of callSiteResult.callSites) {
-      if (globallyPatched.has(site.provider)) {
-        if (!instrumentedFiles.has(site.filePath)) {
-          instrumentedFiles.set(site.filePath, new Set());
-        }
-        instrumentedFiles.get(site.filePath)!.add(site.provider);
-      }
-    }
-  }
+  const pythonActivation =
+    language === "python" ? await detectPythonMiddlewareActivation(targetDir, callSiteResult.scannedFiles, callSiteResult.callSites) : null;
 
-  const { wrapped, unwrapped } = classifyCallSites(
+  const { wrapped, excludedCount, unwrapped } = classifyCallSites(
     callSiteResult.callSites,
-    instrumentedFiles,
-    instrumentation.detected,
     config,
-    language,
+    pythonActivation
+      ? pythonActivationJudge(pythonActivation, instrumentation.detected)
+      : perFileImportJudge(instrumentedFiles, instrumentation.detected, language),
   );
 
-  // Collect all providers that have instrumentation somewhere
-  const instrumentedProviders = new Set<string>();
-  for (const [, providers] of instrumentedFiles) {
-    for (const p of providers) instrumentedProviders.add(p);
-  }
+  // Providers whose middleware is present somewhere. For Python that includes
+  // an import only the never-imported helper has: its call sites are already
+  // reported above, with the fix, so a second warning would only repeat it.
+  const instrumentedProviders = pythonActivation
+    ? new Set([...pythonActivation.activated, ...pythonActivation.onlyInUnimportedHelper])
+    : new Set([...instrumentedFiles.values()].flatMap((providers) => [...providers]));
 
   // Collect provider keys that have at least one detected call site
   const callSiteProviders = new Set<string>();
@@ -301,7 +356,7 @@ export async function runCheck(targetDir: string, excludePatterns?: string[]): P
       for (const line of lines) {
         const trimmed = line.trimStart();
         if (trimmed.startsWith("#") || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) continue;
-        if (trimmed.includes("usage_metadata") || trimmed.includes("usageMetadata")) {
+        if (/usage_metadata|usageMetadata|createUsageMetadata\(/.test(trimmed)) {
           filesWithMetadata.add(site.filePath);
           break;
         }
@@ -312,7 +367,9 @@ export async function runCheck(targetDir: string, excludePatterns?: string[]): P
   }
 
   // Count wrapped calls in files that have metadata
-  const withMetadataCount = wrapped.filter(s => filesWithMetadata.has(s.filePath)).length;
+  const withMetadataCount = language === "go"
+    ? await countGoCallsWithUsageMetadata(targetDir, wrapped)
+    : wrapped.filter(s => filesWithMetadata.has(s.filePath)).length;
 
   // ── Detect instrumentation regressions ──────────────────────────────
   // Two signals:
@@ -393,6 +450,7 @@ export async function runCheck(targetDir: string, excludePatterns?: string[]): P
     language,
     totalCallSites: callSiteResult.callSites.length,
     wrappedCount: wrapped.length,
+    excludedCount,
     unwrappedCount: unwrapped.length,
     unwrapped,
     withMetadataCount,

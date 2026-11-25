@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
-import { join } from "path";
 import type { MeteringDesign } from "../../types/metering-design.js";
 import type { ScanResult } from "../../types/scan-result.js";
-import { safeWriteFile } from "../../utils/fs-helpers.js";
-import { writeMeteringDesign, getDesignFilename } from "./utils/design-writer.js";
+import { writeGeneratedFile, type GeneratedFileResult } from "../../utils/generated-file.js";
+import { describeGitignoreUpdate, ensureRevvyFilesIgnored, trackedFilesWarning } from "../../utils/gitignore.js";
+import { writeMeteringDesign } from "./utils/design-writer.js";
 import { configHelperFileName, renderConfigHelper } from "./config-helper.js";
 
 interface UseGenerateOptions {
@@ -21,7 +21,9 @@ type GenerateStep =
 
 interface GenerateState {
   step: GenerateStep;
-  generatedFiles: string[];
+  results: GeneratedFileResult[];
+  gitignoreSummary?: string;
+  trackedWarning?: string;
   error?: string;
 }
 
@@ -33,19 +35,25 @@ export function useGenerate({
 }: UseGenerateOptions) {
   const [state, setState] = useState<GenerateState>({
     step: "writing-design",
-    generatedFiles: [],
+    results: [],
   });
 
   useEffect(() => {
     let cancelled = false;
 
     async function generate() {
-      const generatedFiles: string[] = [];
+      const results: GeneratedFileResult[] = [];
 
       try {
-        setState((prev) => ({ ...prev, step: "writing-design" }));
-        await writeMeteringDesign(targetDir, meteringDesign);
-        generatedFiles.push(getDesignFilename(meteringDesign.detectedLanguage));
+        const gitignoreUpdate = await ensureRevvyFilesIgnored(targetDir);
+        setState((prev) => ({
+          ...prev,
+          step: "writing-design",
+          gitignoreSummary: describeGitignoreUpdate(gitignoreUpdate),
+          trackedWarning: trackedFilesWarning(gitignoreUpdate) ?? undefined,
+        }));
+        results.push(await writeMeteringDesign(targetDir, meteringDesign));
+        setState((prev) => ({ ...prev, results: [...results] }));
 
         if (cancelled) return;
 
@@ -53,22 +61,17 @@ export function useGenerate({
 
         const utilityContent = renderConfigHelper(meteringDesign);
         const fileName = configHelperFileName(meteringDesign.detectedLanguage);
-        const filePath = join(targetDir, fileName);
 
         if (cancelled) return;
 
         setState((prev) => ({ ...prev, step: "writing-files" }));
-        await safeWriteFile(filePath, utilityContent);
-        generatedFiles.push(fileName);
+        results.push(await writeGeneratedFile(targetDir, fileName, utilityContent));
 
         if (cancelled) return;
 
-        setState({
-          step: "done",
-          generatedFiles,
-        });
+        setState((prev) => ({ ...prev, step: "done", results: [...results] }));
 
-        onComplete(generatedFiles);
+        onComplete(results.map((r) => r.file));
       } catch (error) {
         if (!cancelled) {
           setState((prev) => ({

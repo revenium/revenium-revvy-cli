@@ -1,5 +1,6 @@
 import { REVENIUM_DOCS_URL } from "../../../constants/api.js";
 import { getDesignFilename } from "../../generate/utils/design-writer.js";
+import { configHelperFileName, nodeHelperImportSpecifier } from "../../generate/config-helper.js";
 
 /**
  * Per-provider rule snippets — used to build a rules file that mentions ONLY
@@ -10,7 +11,7 @@ import { getDesignFilename } from "../../generate/utils/design-writer.js";
 const NODE_PROVIDER_PATTERNS: Record<string, string> = {
   "OpenAI": `- **OpenAI**: use the wrapped client from \`revenium-config\` (method-chain API with metadata as 2nd argument).
   \`\`\`ts
-  import { openai, createUsageMetadata } from "./revenium-config.js";
+  import { openai, createUsageMetadata } from "<path to revenium-config.js from this file>";
   await openai.chat().completions().create(params, createUsageMetadata({ ... }));
   \`\`\``,
   "Azure OpenAI": `- **Azure OpenAI**: use the wrapped client from \`revenium-config\` (same shape as OpenAI).`,
@@ -20,7 +21,7 @@ const NODE_PROVIDER_PATTERNS: Record<string, string> = {
   import Anthropic from "@anthropic-ai/sdk";
   await client.messages.create({ ..., usageMetadata: createUsageMetadata({ ... }) });
   \`\`\``,
-  "Google GenAI": `- **Google GenAI**: use the controller pattern from \`revenium-config\` — \`googleAI.createChat([...], "gemini-2.0-flash-001", { ... })\`.`,
+  "Google GenAI": `- **Google GenAI**: on \`@google/genai\`, keep your own \`GoogleGenAI\` client — importing \`revenium-config\` (or \`@revenium/middleware/google/genai\`) meters it; pass \`usageMetadata: { ... }\` in \`ai.models.generateContent({...})\`, or once in \`ai.chats.create({...})\`. On the older \`@google/generative-ai\` SDK, use \`googleAI.createChat([...], "gemini-2.0-flash-001", { ... })\` from \`revenium-config\`.`,
   "Google GenAI (legacy)": `- **Google GenAI (legacy)**: use the controller pattern from \`revenium-config\`.`,
   "Vertex AI": `- **Vertex AI**: use the controller pattern from \`revenium-config\` — same shape as Google GenAI.`,
   "Perplexity": `- **Perplexity**: use the wrapped client from \`revenium-config\` — same shape as OpenAI.`,
@@ -63,6 +64,8 @@ function buildProviderSection(
 
 function buildNodeRule(detectedProviders?: readonly string[]): string {
   const designFile = getDesignFilename("node");
+  const helperFile = configHelperFileName("node");
+  const exampleFile = "src/routes/chat.ts";
   const providerSection = buildProviderSection(detectedProviders, NODE_PROVIDER_PATTERNS);
   return `# Revenium Instrumentation Rules
 
@@ -78,11 +81,12 @@ All AI API calls in this codebase MUST be instrumented with Revenium metering.
 ${providerSection}
 
 ## How to instrument a new AI call
-1. Import the helper: \`import { createUsageMetadata } from "./revenium-config.js"\` (or the workspace-relative path you placed it at, in a monorepo)
+1. Import the helper. It lives at \`${helperFile}\` (from the project root; in a monorepo, wherever you placed it), so the import path is relative to the file you are editing and ends in \`.js\` — from \`${exampleFile}\` that is \`import { createUsageMetadata } from "${nodeHelperImportSpecifier(exampleFile)}"\`
 2. Apply the per-provider pattern shown above
 3. Ensure \`organizationName\` is sourced from the customer ID in your auth context (the same expression revvy detected during setup); wrap it in \`String()\` if it's a number
 
 ## Reference
+- Config helper: see ${helperFile}
 - Metering design: see ${designFile}
 - SDK docs: ${REVENIUM_DOCS_URL}
 `;

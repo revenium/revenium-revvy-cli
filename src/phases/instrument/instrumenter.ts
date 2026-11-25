@@ -1,8 +1,8 @@
 /**
  * Reads each customer source file with AI calls, applies provider-specific
  * transforms, writes the result back, and keeps a `.revvy-backup` of the
- * original next to it. Also derives the install command + .env block the
- * Revvy's Complete screen displays.
+ * original next to it. Also derives the install command the Revvy Complete
+ * screen displays.
  */
 
 import { readFile, writeFile, copyFile } from "fs/promises";
@@ -346,13 +346,4 @@ export function getInstallCommand(design: MeteringDesign, pmInfo?: PackageManage
   ].filter((m): m is string => Boolean(m));
   if (goModules.length === 0) return "go get github.com/revenium/revenium-go-sdk/openai";
   return `go get ${goModules.map((m) => `${m}@latest`).join(" ")}`;
-}
-
-export function generateEnvContent(apiKey?: string): string {
-  return [
-    "",
-    "# Revenium Metering (added by Revvy)",
-    `REVENIUM_METERING_API_KEY=${apiKey || "your_api_key_here"}`,
-    "",
-  ].join("\n");
 }

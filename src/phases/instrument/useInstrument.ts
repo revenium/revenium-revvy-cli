@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { readFile, writeFile, appendFile } from "fs/promises";
+import { writeFile } from "fs/promises";
 import { join } from "path";
 import type { ScanResult } from "../../types/scan-result.js";
 import type { MeteringDesign } from "../../types/metering-design.js";
@@ -7,17 +7,18 @@ import {
   previewInstrumentation,
   instrumentCallSites,
   getInstallCommand,
-  generateEnvContent,
   type PreviewResult,
   type InstrumentationResult,
 } from "./instrumenter.js";
-import { fileExists } from "../../utils/fs-helpers.js";
+import { describeEnvWrite, writeMeteringEnv } from "../../utils/env-helpers.js";
 
 interface UseInstrumentOptions {
   targetDir: string;
   scanResult: ScanResult;
   meteringDesign: MeteringDesign;
   apiKey?: string;
+  baseUrl?: string;
+  keyVerified: boolean;
   onComplete: (result: InstrumentationResult, installCmd: string) => void;
 }
 
@@ -35,7 +36,7 @@ interface InstrumentState {
   preview: PreviewResult | null;
   result: InstrumentationResult | null;
   installCommand: string;
-  envUpdated: boolean;
+  envSummary?: string;
   listWritten: boolean;
   showingExample: boolean;
   error?: string;
@@ -46,6 +47,8 @@ export function useInstrument({
   scanResult,
   meteringDesign,
   apiKey,
+  baseUrl,
+  keyVerified,
   onComplete,
 }: UseInstrumentOptions) {
   const [state, setState] = useState<InstrumentState>({
@@ -53,10 +56,12 @@ export function useInstrument({
     preview: null,
     result: null,
     installCommand: "",
-    envUpdated: false,
     listWritten: false,
     showingExample: false,
   });
+
+  const updateEnv = async () =>
+    describeEnvWrite(await writeMeteringEnv(targetDir, apiKey, baseUrl, { keyVerified }));
 
   // Step 1: Run preview (dry-run) on mount
   useEffect(() => {
@@ -73,12 +78,16 @@ export function useInstrument({
         if (cancelled) return;
 
         const installCmd = getInstallCommand(meteringDesign);
+        const envSummary = preview.totalFiles === 0 ? await updateEnv() : undefined;
+
+        if (cancelled) return;
 
         setState((prev) => ({
           ...prev,
           step: "awaiting-confirm",
           preview,
           installCommand: installCmd,
+          envSummary,
         }));
       } catch (error) {
         if (!cancelled) {
@@ -167,19 +176,8 @@ export function useInstrument({
           step: "setting-env",
         }));
 
-        const envPath = join(targetDir, ".env");
-        const envContent = generateEnvContent(apiKey);
-
-        if (await fileExists(envPath)) {
-          const existing = await readFile(envPath, "utf-8");
-          if (!existing.includes("REVENIUM_METERING_API_KEY")) {
-            await appendFile(envPath, envContent);
-            setState((prev) => ({ ...prev, envUpdated: true }));
-          }
-        } else {
-          await writeFile(envPath, envContent.trimStart(), "utf-8");
-          setState((prev) => ({ ...prev, envUpdated: true }));
-        }
+        const envSummary = await updateEnv();
+        setState((prev) => ({ ...prev, envSummary }));
 
         setState((prev) => ({ ...prev, step: "done" }));
         onComplete(instrumentResult, state.installCommand);
@@ -191,7 +189,7 @@ export function useInstrument({
         }));
       }
     },
-    [targetDir, scanResult, meteringDesign, apiKey, onComplete, state.installCommand, state.preview],
+    [targetDir, scanResult, meteringDesign, apiKey, baseUrl, keyVerified, onComplete, state.installCommand, state.preview],
   );
 
   return { ...state, confirmAction };

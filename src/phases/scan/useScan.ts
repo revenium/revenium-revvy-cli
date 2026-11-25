@@ -8,6 +8,7 @@ import {
 } from "./detectors/index.js";
 import { discoverCustomerCandidates } from "./discoveries/customer-discovery.js";
 import { discoverCentralizedUtility } from "./discoveries/centralized-utility-discovery.js";
+import { hasNothingToSetUp, nothingToSetUpLines } from "./no-ai-calls.js";
 
 interface UseScanOptions {
   targetDir: string;
@@ -30,6 +31,7 @@ interface ScanState {
   existingInstrumentation: boolean;
   centralizedDetected: boolean;
   customerCandidatesFound: number;
+  nothingToSetUp?: string[];
   error?: string;
 }
 
@@ -125,6 +127,11 @@ export function useScan({ targetDir, onComplete }: UseScanOptions) {
           centralizedUtility: centralized.primary,
           alternativeCentralizedUtilities: centralized.alternatives,
         };
+
+        if (hasNothingToSetUp(result)) {
+          setState((prev) => ({ ...prev, nothingToSetUp: nothingToSetUpLines(result, false) }));
+          return;
+        }
 
         onComplete(result);
       } catch (error) {

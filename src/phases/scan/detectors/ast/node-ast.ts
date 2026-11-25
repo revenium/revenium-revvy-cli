@@ -16,6 +16,7 @@ import * as t from "@babel/types";
 import type { CallSite } from "../../../../types/scan-result.js";
 import {
   getPatternsForLanguage,
+  type CallPattern,
   type ProviderPattern,
 } from "../../patterns/index.js";
 
@@ -438,6 +439,37 @@ function buildBindingMap(
   return { bindingToProviders, reveniumImports };
 }
 
+/**
+ * The OpenAI-family wrapped client exposes method calls (`chat().completions()`)
+ * where the SDK client exposes properties (`chat.completions`), so the chain
+ * alone tells them apart. fal.ai's wrapped client keeps the SDK's method names,
+ * but its generic chains (`run`, `subscribe`) are attributed to fal.ai only when
+ * the receiver resolves to an `@fal-ai/client` import, which is the SDK client.
+ * Endpoints the wrapped client does not offer can only be called on the SDK
+ * client, so they are never metered.
+ */
+function clientKind(provider: ProviderPattern, pattern: CallPattern): CallSite["client"] {
+  if (provider.meteredVia !== "wrapped-client") return undefined;
+  if (pattern.noWrappedEquivalent) return "no-wrapped-equivalent";
+  return pattern.methodChain.includes("()") ? "revenium-wrapped" : "provider-sdk";
+}
+
+/**
+ * Parses Node source with the scanner's options. Returns null when the source
+ * has syntax errors, so callers that edit a file can refuse to touch one they
+ * cannot read reliably.
+ */
+export function parseNodeSource(content: string): t.File | null {
+  try {
+    const ast = parse(content, PARSER_OPTIONS);
+    return ast.errors && ast.errors.length > 0 ? null : ast;
+  } catch {
+    return null;
+  }
+}
+
+export { traverse as traverseNodeAst };
+
 export function detectNodeCallSites(
   filePath: string,
   content: string,
@@ -461,13 +493,14 @@ export function detectNodeCallSites(
   // Pre-build a lookup: methodChain → list of (provider, callPattern)
   const methodIndex = new Map<
     string,
-    Array<{ provider: ProviderPattern; methodChain: string; method: string; operationType: ProviderPattern["callPatterns"][number]["operationType"] }>
+    Array<{ provider: ProviderPattern; pattern: CallPattern; methodChain: string; method: string; operationType: CallPattern["operationType"] }>
   >();
   for (const provider of patterns) {
     for (const cp of provider.callPatterns) {
       const arr = methodIndex.get(cp.methodChain) ?? [];
       arr.push({
         provider,
+        pattern: cp,
         methodChain: cp.methodChain,
         method: cp.method ?? cp.methodChain,
         operationType: cp.operationType,
@@ -527,6 +560,7 @@ export function detectNodeCallSites(
 
       const enclosingFunction = findEnclosingFunctionName(path);
 
+      const client = clientKind(chosen.provider, chosen.pattern);
       callSites.push({
         filePath,
         lineNumber,
@@ -535,6 +569,7 @@ export function detectNodeCallSites(
         operationType: chosen.operationType,
         snippet,
         enclosingFunction,
+        ...(client ? { client } : {}),
       });
     },
   });

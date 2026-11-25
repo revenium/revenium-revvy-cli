@@ -23,11 +23,7 @@ import (
 
 	"github.com/revenium/revenium-go-sdk/core"
 )
-<%_ const usedIdents = new Set() -%>
-<%_ const goIdent = (prefix, name) => { const base = prefix + name.replace(/[^A-Za-z0-9]+/g, ' ').trim().split(' ').filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(''); let ident = base; for (let n = 2; usedIdents.has(ident); n++) ident = base + n; usedIdents.add(ident); return ident } -%>
 <%_ const goString = (value) => JSON.stringify(String(value)) -%>
-<%_ const productIdents = new Map(products.map(p => [p.name, goIdent('Product', p.name)])) -%>
-<%_ const agentIdents = new Map(agents.map(a => [a.name, goIdent('Agent', a.name)])) -%>
 <%_ const isApiKey = organization.source === 'api-key' -%>
 <%_ if (products.length > 0) { -%>
 
@@ -75,6 +71,12 @@ type Context struct {
 	AgenticJobID string
 	// AgenticJobName is the human-readable Job name.
 	AgenticJobName string
+	// AgenticJobType is the Job's workflow category (for example "loan-application-review"); a Job needs one before it can take outcome metrics.
+	AgenticJobType string
+	// AgenticJobVersion is the version of the Job definition (for example "2026-10"), not of the agent code.
+	AgenticJobVersion string
+	// Environment is where the call runs ("production", "staging"); it overrides REVENIUM_ENVIRONMENT for this call.
+	Environment string
 	// TicketID is the external ticket or issue this work belongs to (max 256 chars).
 	TicketID string
 	// SubagentType is the sub-agent that made the call in a multi-agent system (max 128 chars, [A-Za-z0-9._:-]).
@@ -108,6 +110,9 @@ func UsageMetadata(c Context) map[string]interface{} {
 	set("traceId", c.TraceID)
 	set("agenticJobId", c.AgenticJobID)
 	set("agenticJobName", c.AgenticJobName)
+	set("agenticJobType", c.AgenticJobType)
+	set("agenticJobVersion", c.AgenticJobVersion)
+	set("environment", c.Environment)
 	set("ticketId", c.TicketID)
 	set("subagentType", c.SubagentType)
 	return metadata

@@ -11,6 +11,7 @@ import { hasReveniumInDeps } from "../../utils/hasReveniumInDeps.js";
 
 interface HealthCheckProps {
   apiKey?: string;
+  baseUrl?: string;
   targetDir: string;
   onSetApiKey: (key: string) => void;
   onComplete: (result: HealthCheckResult) => void;
@@ -18,6 +19,7 @@ interface HealthCheckProps {
 
 export function HealthCheck({
   apiKey,
+  baseUrl,
   targetDir,
   onSetApiKey,
   onComplete,
@@ -26,7 +28,7 @@ export function HealthCheck({
   const [inputKey, setInputKey] = useState("");
   const [failedKey, setFailedKey] = useState<string | undefined>(undefined);
   const [isNewUser, setIsNewUser] = useState(false);
-  const state = useHealthCheck({ apiKey, onComplete });
+  const state = useHealthCheck({ apiKey, baseUrl, onComplete });
 
   useEffect(() => {
     hasReveniumInDeps(targetDir).then((found) => setIsNewUser(!found));

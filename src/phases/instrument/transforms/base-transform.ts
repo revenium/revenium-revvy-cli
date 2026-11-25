@@ -32,7 +32,7 @@ export interface TransformResult {
  * Counts the net depth contribution of a code line for a given pair of
  * delimiters, ignoring occurrences inside string literals and comments.
  *
- * Used by insertAfterImports to track whether a multi-line import block is
+ * Used by findImportSectionEnd to track whether a multi-line import block is
  * still open (e.g. `import {` followed by member names on subsequent lines,
  * closed by `}` later — TypeScript style — or `from x import (` ... `)` —
  * Python style).
@@ -76,18 +76,33 @@ function netDelimiterDepth(line: string, open: string, close: string): number {
 }
 
 /**
- * Inserts a line after the last import statement in the file.
- * Works for both Node/TS (`import { ... } from "x"`, including multi-line
- * brace blocks) and Python (`from x import (Y, Z)` parenthesised blocks).
- *
- * Tracks unbalanced `{`/`}` AND `(`/`)` so the insertion point is always
- * AFTER the closing token of any multi-line import block — never inside it.
+ * Inserts `block` at line `index`, separated from its neighbours by exactly one
+ * blank line where a neighbour is code. Blank lines already in the file are
+ * kept as they are, so spacing elsewhere (PEP 8's two blank lines before a
+ * top-level `def`/`class`, for one) is never rewritten.
  */
-export function insertAfterImports(
-  content: string,
-  linesToInsert: string
-): string {
-  const lines = content.split("\n");
+export function insertBlockAtLine(lines: string[], index: number, block: string[]): string[] {
+  const before = lines.slice(0, index);
+  const after = lines.slice(index);
+  const needsBlankBefore = before.length > 0 && before[before.length - 1]!.trim() !== "";
+  const needsBlankAfter = after.length > 0 && after[0]!.trim() !== "";
+  return [
+    ...before,
+    ...(needsBlankBefore ? [""] : []),
+    ...block,
+    ...(needsBlankAfter ? [""] : []),
+    ...after,
+  ];
+}
+
+/**
+ * Index of the first line after the file's import section (0 when it has no
+ * imports). Works for both Node/TS (`import { ... } from "x"`, including
+ * multi-line brace blocks) and Python (`from x import (Y, Z)` parenthesised
+ * blocks): unbalanced `{`/`}` and `(`/`)` are tracked so the index is always
+ * after the closing token of a multi-line import, never inside it.
+ */
+export function findImportSectionEnd(lines: string[]): number {
   let lastImportIndex = -1;
   let braceDepth = 0;
   let parenDepth = 0;
@@ -128,9 +143,7 @@ export function insertAfterImports(
     }
   }
 
-  const insertAt = lastImportIndex + 1;
-  lines.splice(insertAt, 0, linesToInsert);
-  return lines.join("\n");
+  return lastImportIndex + 1;
 }
 
 /**

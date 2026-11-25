@@ -58,6 +58,10 @@ export const TRANSFORM_REGISTRY: Record<string, TransformEntry> = {
   "python:vertex-ai":    { fn: transformPythonGoogleGenAI,  flag: "TRANSFORM_PYTHON_GOOGLE_GENAI" },
 };
 
+export function hasAutomaticTransform(language: string): boolean {
+  return Object.keys(TRANSFORM_REGISTRY).some((key) => key.startsWith(`${language}:`));
+}
+
 /**
  * Looks up the transform function for a language:provider pair.
  * Returns null if no transform exists or the feature flag is disabled.

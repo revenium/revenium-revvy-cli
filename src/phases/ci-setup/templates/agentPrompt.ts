@@ -24,12 +24,10 @@ npx @revenium/revvy --non-interactive --dry-run \\
 # 2. Read the dry-run output, then apply the patterns at locations YOU pick
 #    (call sites, config helper, .env, install command — see Step 6)
 
-# 3. Run revvy non-dry-run with --skip-ci to skip the file-writing step
-#    (you've already done it), but still get the CI workflow + editor rules:
-npx @revenium/revvy --non-interactive \\
-  --target-dir /path/to/project \\
-  --customer-id-expression "<same-as-above>" \\
-  ...
+# 3. The dry run prints the generated files in full (helper, manifests, CI
+#    workflow); copy the CI workflow too. Do NOT re-run revvy without
+#    --dry-run after placing files yourself: a real run writes the helper,
+#    .env and instrumentation again (--skip-ci only skips CI + editor rules).
 \`\`\`
 
 > \`--target-dir\` defaults to the current directory. Always set it explicitly when running from a workspace root, CI, or another repo.
@@ -77,7 +75,7 @@ Search the source code for these imports:
 
 **Node**: \`import OpenAI from "openai"\`, \`import Anthropic from "@anthropic-ai/sdk"\`, \`import { GoogleGenAI } from "@google/genai"\`
 
-**Go**: \`github.com/openai/openai-go/v3\`, \`github.com/anthropics/anthropic-sdk-go\`, \`google.golang.org/genai\`, \`github.com/ollama/ollama/api\`
+**Go**: \`github.com/openai/openai-go/v3\` (revvy also detects v1 and v2, but the wrapped client takes v3 types, so those projects upgrade \`openai-go\` as part of the migration), \`github.com/anthropics/anthropic-sdk-go\`, \`google.golang.org/genai\`, \`github.com/ollama/ollama/api\`
 
 ### Step 3: Find the customer ID (REQUIRED)
 This is the most critical piece — how does this app know WHICH CUSTOMER is making the request? Revenium attributes every AI call's cost to a specific customer using the value this expression returns.
@@ -257,14 +255,14 @@ For each pattern revvy showed you, decide where it belongs in this codebase, the
 
 3. **\`.env\`** — revvy showed the env vars to add. Place them in whichever \`.env\` your runtime actually reads (e.g., \`apps/web/.env\` in a monorepo, \`.env\` at repo root in a single-package project).
 
-4. **\`revenium-metering-design.json\`** + **\`revenium-call-sites.json\`** — revvy showed the contents. Drop them at the repo root (these are configuration manifests, not runtime code, so root is fine in any layout).
+4. **\`revenium-metering-design.json\`** + **\`revenium-call-sites.json\`** (Python projects: \`revenium_metering_design.json\` + \`revenium_call_sites.json\`; the same applies wherever this guide names them) — revvy showed the contents. Drop them at the repo root (these are configuration manifests, not runtime code, so root is fine in any layout).
 
 5. **Install the SDK** — adapt the install command revvy printed to your package manager and target the right workspace package. Examples:
    - \`npm install @revenium/middleware dotenv\` (single-package npm)
    - \`pnpm --filter @your/app-package add @revenium/middleware dotenv\` (pnpm monorepo)
    - \`yarn workspace @your/app-package add @revenium/middleware dotenv\` (yarn workspaces)
 
-6. **CI workflow + editor rules** — revvy auto-creates \`.github/workflows/revenium-check.yml\` and \`.{cursor,claude,gemini,codex}/rules/revenium.md\` on a real (non-dry-run) invocation. If you want those, run \`revvy --non-interactive\` (without \`--dry-run\`) once after Step 6 with \`--skip-ci\` *omitted* — or copy them from \`docs/ci-templates/\` if you prefer to author them by hand.
+6. **CI workflow** — the dry run prints \`.github/workflows/revenium-check.yml\` in full; copy it. The editor rules and agent prompts (\`.{cursor,claude,gemini,codex}/rules/revenium.md\`, \`revvy-agent.md\`) are listed by path only: their content is this guide plus the project's conventions, so either skip them or, on a single-package project, let one real run write everything (see the fallback below). Do not mix the two — a real run after you placed files by hand writes the helper, \`.env\` and instrumentation again.
 
 > **Auto-instrument fallback:** if the project is a simple single-package layout (one \`package.json\` at root, no workspaces), you can skip the dry-run-and-apply dance and let revvy do the placement directly: drop \`--dry-run\` from the Step 5 command. This is also fine for projects where revvy's defaults happen to match your layout. The dry-run-then-apply flow is safer for monorepos and complex codebases.
 
@@ -519,13 +517,13 @@ curl -X POST '${REVENIUM_API_BASE_URL}${REVENIUM_METERING_PATH_PREFIX}/ai/comple
 | \`agentVersion\` | string, max 64 | Release of the agent code that produced this completion (\`"1.4.2"\`, a git SHA). Shown on the job page and across a job type, so a regression after a deploy is visible per version. |
 | \`subagentType\` | string, max 128, \`[A-Za-z0-9._:-]\` | The sub-agent inside a multi-agent system that made the call (\`planner\`, \`researcher\`, \`code-reviewer\`). Open vocabulary — a well-formed value you invent is stored as sent. Skip it in a single-agent app. |
 
-Both reject a blank value or one outside the character set with a \`400\` rather than truncating it. SDK support differs — check "Per-SDK + per-provider extras" before promising either. The same contract also carries \`querySource\`, \`promptId\`, \`promptLength\` and \`speed\`: those describe a coding-assistant client (Claude Code reports them about itself), not an application, so do not invent values for them.
+Both reject a blank value or one outside the character set with a \`400\` rather than truncating it. SDK support differs — check "Per-SDK + per-provider extras" before promising either. The same contract also carries the coding-assistant client fields (\`clientSurface\`, \`entrypoint\`, \`querySource\`, \`promptId\`, …) and the failed-call fields (\`errorCode\`, \`billingSkipped\`, …); both are covered under "Revenium Data Model" below.
 
 **How to report an outcome** (after the Job's terminal action):
 
 > **Important:** The outcome API requires a **write key** (\`rev_sk_*\`), not the metering key (\`rev_mk_*\`) used for sending transactions. Get it at ${REVENIUM_DASHBOARD_URL}${DASHBOARD_PATHS.SDK_SETUP} (Permissions: **WRITE**). Where it goes depends on the SDK: the Python SDK reads \`REVENIUM_WRITE_API_KEY\` (it has no \`REVENIUM_API_KEY\`); the Node SDK's jobs client uses the **same** key as metering (\`REVENIUM_METERING_API_KEY\` — \`REVENIUM_API_KEY\` is only an alias of it), so the one Node process that reports outcomes runs on a \`rev_sk_*\` key, which also meters — keep every process that only meters on its \`rev_mk_*\` key; the Go SDK takes the key in \`jobs.JobClientConfig{APIKey: ...}\` and rejects a \`rev_mk_*\` key when the client is built (convention: \`REVENIUM_WRITE_API_KEY\`).
 >
-> Revenium has three key scopes and the prefix tells you which you were handed: \`rev_mk_*\` metering-only (ingestion), \`rev_sk_*\` write / full access (outcome reporting, provisioning), \`rev_rk_*\` read-only (dashboards and reports). A \`rev_rk_*\` key will read \`/users/me\` happily and then fail on the first write, so check the prefix rather than inferring the scope from a successful auth check. revvy verifies a \`rev_mk_*\` key by POSTing an empty body to the ingestion endpoint — a \`400\` proves the key authenticates without metering anything, while \`401\`/\`403\` means the key is bad. The same metering key on a platform path such as \`/users/me\` gets \`403 Insufficient API key scope\`: a scope problem, not a bad key. Use the narrowest scope that does the job. Older accounts may also hold legacy \`hak_*\` keys: they still authenticate, but their scope lives server-side rather than in the prefix, so the prefix tells you nothing — prefer issuing a scoped key.
+> Revenium has three key scopes and the prefix tells you which you were handed: \`rev_mk_*\` metering-only (ingestion), \`rev_sk_*\` write / full access (outcome reporting, provisioning), \`rev_rk_*\` read-only (dashboards and reports). A \`rev_rk_*\` key will read \`/users/me\` happily and then fail on the first write, so check the prefix rather than inferring the scope from a successful auth check. revvy verifies a \`rev_mk_*\` key by POSTing an empty body to the ingestion endpoint — a \`400\` proves the key authenticates without metering anything, while \`401\`/\`403\` means the key is bad. The same metering key on a platform path such as \`/users/me\` gets a \`403\` (the body may carry no message): a scope problem, not a bad key. Use the narrowest scope that does the job. **Who owns the key matters too:** a \`rev_sk_*\` or \`rev_rk_*\` key created by a user whose only role is Member or Department Admin is refused with \`403\` on outcomes, job types and provider credentials. It still reads \`/users/me\`, so the auth check passes and the first outcome fails. That user's metering keys keep working. Report outcomes with a write key created by an account, tenant or organization admin. Older accounts may also hold legacy \`hak_*\` keys: they still authenticate, but their scope lives server-side rather than in the prefix, so the prefix tells you nothing — prefer issuing a scoped key.
 
 Option A — **via the SDK** (preferred whenever the middleware is already installed):
 
@@ -554,7 +552,11 @@ From \`0.10.0\`, \`JobContext\` raises \`ValueError\` for a job id that breaks t
 Node (\`@revenium/middleware >= 1.2.0\` — the version that added \`amendJobOutcome\` and \`getJobOutcomeHistory\`; from \`1.2.0\` a second \`reportJobOutcome\` for the same Job throws \`OutcomeAlreadyReportedError\` instead of returning silently, so catch it):
 
 \`\`\`ts
-import { JobContext, reportJobOutcome, amendJobOutcome, getJobOutcomeHistory } from "@revenium/middleware";
+import { initializeConfig, JobContext, amendJobOutcome, getJobOutcomeHistory } from "@revenium/middleware";
+
+// Configure the SDK before the first jobs call; without it the call throws
+// "Revenium API key is not configured" even when the variable is set.
+initializeConfig();
 
 const job = new JobContext({ jobId: "loan-app-12345", type: "loan-application-review" });
 await job.run(async () => { /* your AI calls inherit the job fields */ });
@@ -564,7 +566,9 @@ await amendJobOutcome("loan-app-12345", { reason: "Expanded to annual plan", out
 const history = await getJobOutcomeHistory("loan-app-12345");
 \`\`\`
 
-> ⚠ Several fields the API accepts are **missing from the Node typed surface** as of \`@revenium/middleware@2.0.0\`: \`outcomeType: "UNSUCCESSFUL"\` is absent from the \`OutcomeType\` union, and \`outcomeReason\`, \`metrics\` and \`expectedEntityVersion\` are absent from \`JobOutcome\` / \`JobOutcomeAmendment\` altogether (and \`reason\` is still typed as required on the amendment). If you need any of them from Node today, use the direct API call below rather than fighting the types.
+The Node jobs client does **not** derive the team from the key: set \`REVENIUM_TEAM_ID\` to the hashed team id (from \`/users/me\`, see below) or pass \`teamId\` to \`JobContext\`, otherwise every jobs call answers \`403\`. It authenticates with \`REVENIUM_METERING_API_KEY\`, so the process that reports outcomes runs on a write key (see the key note above).
+
+> ⚠ Several fields the API accepts are **missing from the Node typed surface** as of \`@revenium/middleware@2.1.0\`: \`outcomeType: "UNSUCCESSFUL"\` is absent from the \`OutcomeType\` union, and \`outcomeReason\`, \`metrics\` and \`expectedEntityVersion\` are absent from \`JobOutcome\` / \`JobOutcomeAmendment\` altogether (and \`reason\` is still typed as required on the amendment). If you need any of them from Node today, use the direct API call below rather than fighting the types.
 
 Go (\`github.com/revenium/revenium-go-sdk/core/jobs >= 1.1.9\`): \`jobs.NewJobClient(jobs.JobClientConfig{APIKey, TeamID, BaseURL})\`, then \`ReportJobOutcome\`, \`AmendJobOutcome\`, \`GetJobOutcomeHistory\` and \`AppendOutcomeMetrics\`. Its types carry everything the API accepts — \`OutcomeReason\`, \`Metrics\`, \`ExpectedEntityVersion\` and the \`UNSUCCESSFUL\` outcome — and \`jobs.SetJobContext\` / \`RunWithJobContext\` stamp the job fields onto every metered call in scope.
 
@@ -645,7 +649,33 @@ Returns the revisions in order: \`sequence: 1\` is the initial report, \`2\`+ ar
 
 **Outcome metrics** (declared facts beside the single \`outcomeValue\` — e.g. \`quality_rate\`, \`hours_saved\`, \`tickets_closed\`):
 
-Metric keys are **declared per job type before they can be sent**: \`PUT ${REVENIUM_API_BASE_URL}${REVENIUM_API_PATH_PREFIX}/jobs/types/{agenticJobType}/economics?teamId={hashedTeamId}\` with the write key, listing each metric's \`key\`, \`type\` (\`COUNT\` | \`DURATION\` | \`PERCENT\` | \`MONEY\` | \`SCORE\`), \`direction\` (\`HIGHER_IS_BETTER\` | \`LOWER_IS_BETTER\`), \`aggregation\` (\`SUM\` | \`AVG\` | \`LAST\`) and \`resolution\` (\`PER_JOB\` for outcome metrics; \`PERIOD\` facts are posted to \`.../jobs/types/{agenticJobType}/facts\` instead). Up to 100 metrics per declaration; economics money is USD only. A Job with no \`agenticJobType\`, an undeclared key, or a \`PERIOD\`-resolution key returns \`400\`. \`reported_value\` is reserved (it mirrors \`outcomeValue\`), and \`quality_rate\` must be between 0 and 1. The Python SDK wraps this as \`upsert_job_type_economics()\` (\`>= 0.8.0\`).
+Metric keys are **declared per job type before they can be sent**, in the job type's *economics* — a declaration that also says what one unit of work is, so Revenium can report cost and value per unit:
+
+\`\`\`
+PUT ${REVENIUM_API_BASE_URL}${REVENIUM_API_PATH_PREFIX}/jobs/types/{agenticJobType}/economics?teamId={hashedTeamId}
+Headers:
+  x-api-key: <REVENIUM_API_KEY>      # the rev_sk_* write key
+Body:
+  {
+    "unitMetricKey": "invoices_processed", // REQUIRED, max 64 — must name a declared metric of type COUNT
+    "unitLabel":     "invoices",           // REQUIRED, max 64 — how one unit is labelled in the dashboard
+    "metrics": [                           // REQUIRED, 1-100, unique keys
+      { "key": "invoices_processed", "type": "COUNT",   "direction": "HIGHER_IS_BETTER", "aggregation": "SUM", "resolution": "PER_JOB" },
+      { "key": "quality_rate",       "type": "PERCENT", "direction": "HIGHER_IS_BETTER", "aggregation": "AVG", "resolution": "PER_JOB" }
+    ],
+    "monetization": {                      // optional — turns a metric into money
+      "metricKey": "invoices_processed", "valuePerUnit": 4.5, "currency": "USD",
+      "category": "COST_AVOIDED",          // REVENUE | COST_AVOIDED | TIME_SAVED | LEADING_VALUE
+      "basis": "REALIZED"                  // REALIZED | EXPECTED (a forecast)
+    },
+    "overheadPerUnit": 0.25, "overheadCurrency": "USD", // optional, always together
+    "dimensions": [ { "key": "team", "allowedValues": ["emea", "us"] } ] // optional, max 20 — for PERIOD facts
+  }
+\`\`\`
+
+A declaration **without \`unitMetricKey\` and \`unitLabel\` is a \`400\`**, as is a \`unitMetricKey\` that is not one of the declared \`COUNT\` metrics — so always declare at least one \`COUNT\` metric that counts the unit of work, even if the only outcome you care about is a rate. Metric fields: \`type\` \`COUNT\` | \`DURATION\` | \`PERCENT\` | \`MONEY\` | \`SCORE\`; \`direction\` \`HIGHER_IS_BETTER\` | \`LOWER_IS_BETTER\`; \`aggregation\` \`SUM\` | \`AVG\` | \`LAST\`; \`resolution\` \`PER_JOB\` for outcome metrics, or \`PERIOD\` for facts posted to \`.../jobs/types/{agenticJobType}/facts\` (each fact carries \`periodStart\`, \`periodEnd\`, a declared \`dimensionKey\` / \`dimensionValue\`, \`key\` and \`value\`). The PUT replaces the whole declaration. Money is USD only, and a \`PERCENT\` value is a fraction from 0 to 1. A Job with no \`agenticJobType\`, an undeclared key, or a \`PERIOD\`-resolution key sent on an outcome returns \`400\`. \`reported_value\` is reserved (it mirrors \`outcomeValue\`), and \`quality_rate\` must be between 0 and 1. The Python SDK wraps this as \`upsert_job_type_economics()\` (\`>= 0.8.0\`).
+
+**Pre-AI baseline** (optional, unlocks "before vs after"): \`POST .../jobs/types/{agenticJobType}/baselines\` with \`effectiveFrom\` (required, ISO-8601) and any of \`costPerUnit\`, \`minutesPerUnit\`, \`qualityRate\` (0-1), \`hourlyRate\`, \`headcount\`, and a throughput (\`throughputValue\` with \`throughputPeriod\` \`HOUR\` | \`DAY\` | \`WEEK\` | \`MONTH\`, and \`throughputScope\` \`TEAM\` | \`PER_PERSON\`). Baselines are versioned, never edited: post a new one with a later \`effectiveFrom\`. Baselines and facts are refused until the job type has economics. Ask the customer for these numbers — never invent a baseline.
 
 Send facts with the outcome (\`metrics\` on the POST or PATCH above), or append them later when they arrive after the outcome was reported:
 
@@ -669,22 +699,25 @@ Option C — **via Dashboard UI** (for manual reporting or testing):
 
 ### Rate limits and retry behaviour
 
-Every authenticated request maps to one of three buckets, and the budgets are very different — which matters here because **metering and outcome reporting are in different buckets**:
+Three layers can answer \`429\`, and **metering and outcome reporting are limited separately**:
+
+**1. Edge limit — per API key, management API only.** Every call under \`/profitstream/\` that sends \`x-api-key\` (outcomes, job-type economics, \`/users/me\`, provider credentials) counts against **300 requests per key per trailing 60 seconds**. Metering ingest does not. A refusal is \`429\` with \`Retry-After: 60\`, body \`{"error":"rate_limited", ...}\` and **no** \`X-RateLimit-*\` headers. A batch script that backfills outcomes for thousands of Jobs hits this first: pace it under 5 requests per second per key.
+
+**2. Application buckets — per account:**
 
 | Bucket | Paths | Limit |
 |---|---|---|
-| \`metering\` | \`${REVENIUM_METERING_PATH_PREFIX}/**\` — the AI/tool/event ingestion calls | 100 req/sec **per API key** (raised per tenant on request) |
-| \`platform\` | \`${REVENIUM_API_PATH_PREFIX}/**\` — Jobs, outcomes, \`/users/me\`, everything else | 50 req/sec per account |
-| \`analytics\` | \`${REVENIUM_API_PATH_PREFIX}/sources/metrics/**\`, \`/billing/**\`, \`/reports/**\`, \`/coding-assistant/**\` | 100 req/sec per account |
+| \`metering\` | \`${REVENIUM_METERING_PATH_PREFIX}/**\` and \`/v2/otlp/**\` — the ingestion calls | 1,000 req/sec per account, **and** 100 req/sec per API key |
+| \`platform\` | \`${REVENIUM_API_PATH_PREFIX}/**\` and \`/v2/sdk/**\` — Jobs, outcomes, \`/users/me\`, everything else | 50 req/sec per account |
+| \`analytics\` | AI metrics, traces, billing analytics, chart and cost-attribution reads | 100 req/sec per account |
 
-Platform and analytics limits are **per account**, so every key in the account shares them; the metering limit is per key. Four headers come back on every authenticated response regardless of status: \`X-RateLimit-Limit\`, \`X-RateLimit-Remaining\`, \`X-RateLimit-Reset\` (unix seconds) and \`X-RateLimit-Bucket\`. Throttle on \`Remaining\` before you hit zero rather than waiting for the \`429\`.
+Every key in the account shares a bucket; on metering, a single key is also capped at 100 req/sec even with account budget left. Four headers come back on every response that maps to a bucket, whatever the status: \`X-RateLimit-Limit\`, \`X-RateLimit-Remaining\`, \`X-RateLimit-Reset\` (unix seconds) and \`X-RateLimit-Bucket\`. Throttle on \`Remaining\` before it reaches zero rather than waiting for the \`429\`. A bucket \`429\` adds \`Retry-After\` and \`X-RateLimit-Limited-Reason: bucket-rate\` — honour it, then back off exponentially **with jitter** so workers in one account don't retry in lockstep.
 
-A \`429\` adds \`Retry-After\` (integer seconds, always present) and \`X-RateLimit-Limited-Reason\`, which is the field that tells you what to actually do:
+**3. Error-pattern limit — per API key and team.** Twenty \`401\`, \`403\`, \`404\` or \`405\` responses within five minutes, from one key for one team scope (the \`teamId\` it asks for), block that key for that scope: 30 seconds, doubling on each repeat up to one hour, with repeats remembered for 24 hours. \`400\` and \`422\` never count. The \`429\` carries \`X-RateLimit-Limited-Reason: error-pattern\`. Retrying harder only extends it; fix the request. A block caused by a wrong \`teamId\` clears as soon as calls use the right one.
 
-- \`bucket-rate\` — you are sending too fast. Honour \`Retry-After\`, then back off exponentially **with jitter** so concurrent workers in the same account don't retry in lockstep.
-- \`error-pattern\` — you are sending *broken* requests. Twenty responses with status 401, 403, 404 or 405 within five minutes trigger a block of 30 seconds whose cooldown **doubles with each violation, up to one hour**. Retrying harder makes it worse; fix the request (auth, missing required fields, wrong Job ID) and the cooldown clears itself.
+**Telling them apart:** \`X-RateLimit-*\` headers and a body with \`"type": "rate_limit_error"\` mean the application (2 or 3); a body with \`"error": "rate_limited"\` and only \`Retry-After\` means the edge (1).
 
-Full reference: ${REVENIUM_RATE_LIMITS_DOCS_URL}. This is the reason the outcome-\`404\` retry above must be a backoff and not a loop: a tight retry on a Job that hasn't materialized yet is exactly the sustained-4xx pattern the limiter is built to stop, and the penalty then lands on your metering traffic too.
+Full reference: ${REVENIUM_RATE_LIMITS_DOCS_URL}. This is why the outcome-\`404\` retry above must be a backoff and not a loop: a tight retry on a Job that hasn't materialized yet is exactly the repeated-\`404\` pattern the limiter blocks, and the block then lands on every outcome call that key makes for that team. Metering keeps flowing either way: its calls carry no \`teamId\`, so they count under a different scope from the outcome calls — even for the Node process that meters and reports outcomes on one \`rev_sk_*\` key.
 
 ### Retry safety for metering (\`Idempotency-Key\`)
 
@@ -711,7 +744,8 @@ The header is opt-in and requests without it behave exactly as before. OTLP endp
 |----------|----------|-------------|
 | \`--non-interactive\` | Yes (for agents) | Run without prompts |
 | \`--api-key <key>\` | Yes (or env var) | Revenium API key |
-| \`--setup-mode\` | No | \`instrumentation\` (default) or \`both\` (also connects billing providers) |
+| \`--base-url <url>\` | No | Revenium API base URL for a dev or staging environment (or set \`REVENIUM_METERING_BASE_URL\`). When it differs from the production default, revvy also writes it to \`.env\` as \`REVENIUM_METERING_BASE_URL\`, so the app meters to the environment the key belongs to |
+| \`--setup-mode\` | No | \`instrumentation\` (default) or \`both\`. In non-interactive mode both values instrument code only — billing providers are connected in the interactive wizard ("Connect billing providers" or "Both") or on the dashboard's Providers page, never from a flag |
 | \`--target-dir <path>\` | No | Project directory (default: cwd) |
 | \`--customer-id-expression\` | Recommended | Code expression for org/customer ID (e.g., \`req.user.orgId\`) |
 | \`--customer-id-literal\` | Alternative to above | Literal string constant — auto-quoted in generated code. Use for CLI tools, internal apps, or when there's no per-customer concept. |
@@ -720,7 +754,8 @@ The header is opt-in and requests without it behave exactly as before. OTLP endp
 | \`--centralized-utility\` | Optional | File path if >70% of calls go through one file, otherwise \`none\` |
 | \`--exclude\` | Optional | Glob pattern to exclude from scanning (repeatable; gitignore syntax). Combined with \`.gitignore\` and \`.revvyignore\`. |
 | \`--skip-ci\` | Optional | Skip GitHub Actions + editor rules |
-| \`--dry-run\` | Optional | Preview without modifying files (no API key required) |
+| \`--dry-run\` | Optional | Preview without modifying files (no API key required); prints every generated file in full |
+| \`--base-url\` | Optional | Revenium API host for a non-production environment (default \`https://api.revenium.ai\`; also read from \`REVENIUM_METERING_BASE_URL\`). The apps you instrument read the same variable at runtime |
 
 ---
 
@@ -730,7 +765,9 @@ The header is opt-in and requests without it behave exactly as before. OTLP endp
 |------|---------|
 | \`revenium-metering-design.json\` | Metering model config (org, products, agents, task types). **Read this file when instrumenting new files later** — it contains the project's established metering patterns. |
 | \`revenium_config.py\`, \`src/revenium-config.ts\` or \`revenium/config.go\` | Helper that builds the usage metadata (\`create_usage_metadata()\` / \`createUsageMetadata()\` / \`revenium.WithUsageMetadata(ctx, ...)\`) |
-| \`.revvy-backup\` files | Backup of every modified source file |
+| \`.env\` | \`REVENIUM_METERING_API_KEY\`, plus \`REVENIUM_METERING_BASE_URL\` when \`--base-url\` is not the production default. An existing \`.env\` keeps its other variables; only these two keys are set, and the previous file is saved as a \`.revvy-backup\` first. A run against the production default removes a leftover \`REVENIUM_METERING_BASE_URL\` only when the key was verified |
+| \`.gitignore\` | Gets \`.env\` and \`*.revvy-backup\` appended when no existing pattern already ignores them in every directory (created if absent), so the metering key and backups stay out of git. Only appended to, never rewritten. If git already tracks \`.env\`, revvy warns and prints the \`git rm --cached .env\` command, because .gitignore cannot untrack it |
+| \`.revvy-backup\` files | Copy of every source file revvy modified, of \`.env\` before revvy changes it, and of any generated file (helper, JSON files, CI workflow, editor rules, agent prompts) whose content differs from what revvy is about to write, for example a helper you edited. An existing backup is never replaced: a later one is saved as \`<file>.1.revvy-backup\`, \`<file>.2.revvy-backup\` and so on. On a re-run revvy reports each generated file as \`Created\`, \`Updated\` (previous version backed up) or \`Unchanged\` |
 | \`.github/workflows/revenium-check.yml\` | GitHub Action running \`revvy check --warn-only\` on PRs (annotations only — remove \`--warn-only\` to enforce blocking once instrumentation is complete) |
 | \`.{cursor,claude,gemini,codex}/rules/revenium.md\` | Instrumentation rules for AI coding tools |
 | \`.{cursor,claude,gemini,codex}/revvy-agent.md\` | This agent prompt |
@@ -743,6 +780,7 @@ The header is opt-in and requests without it behave exactly as before. OTLP endp
 npx @revenium/revvy check                          # human output, exits 1 on failure
 npx @revenium/revvy check --ci                     # GitHub Actions annotations
 npx @revenium/revvy check --ci --warn-only         # report findings, never fail (default for the generated PR workflow)
+npx @revenium/revvy check --output-format json     # machine-readable result (supersedes --ci)
 \`\`\`
 
 The generated GitHub Action ships with \`--warn-only\` so the first install doesn't break customer PRs while gaps are still being discovered. Once the codebase is fully instrumented, remove \`--warn-only\` from \`.github/workflows/revenium-check.yml\` to enforce blocking on unwrapped calls.
@@ -752,17 +790,33 @@ The generated GitHub Action ships with \`--warn-only\` so the first install does
 ✅ All 15 AI calls are properly wrapped by Revenium.
 \`\`\`
 
-**Fail:**
+**Fail (Node, calls still on the SDK's own OpenAI client):**
 \`\`\`
-❌ 3 AI calls not wrapped by Revenium
-  → src/services/chat.py:12 — direct call to openai chat.completions.create
-    💡 Add Revenium instrumentation import for openai in this file
-⚠ 1 AI provider detected without Revenium middleware
-  ⚠ OpenAI (openai)
-    💡 Add instrumentation import for OpenAI
+❌ 2 AI calls not wrapped by Revenium
+
+  OpenAI (2 calls):
+    → src/routes/summarize.ts:97 — chat.completions.create
+    → src/routes/embed.ts:52 — embeddings.create
+    💡 Calls on the SDK's own OpenAI client are not metered: @revenium/middleware/openai wraps the client, it does not patch it. Call the wrapped client instead (the \`openai\` export of the generated revenium-config helper, or GetClient() after Initialize()) with method chains and the metadata as the 2nd argument: openai.chat().completions().create(params, metadata). revvy marks each such client with a TODO(revenium) comment
 \`\`\`
 
-To fix: run \`revvy --non-interactive\` again, or manually add the middleware import (see examples below).
+**Fail (Python, no module that runs imports the middleware):**
+\`\`\`
+❌ 1 AI call not wrapped by Revenium
+
+  OpenAI (1 call):
+    → app/worker.py:7 — chat.completions.create
+    💡 revenium_config.py has \`import revenium_middleware.openai\`, but no module imports revenium_config, so the patch never loads. Import revenium_config (or add \`import revenium_middleware.openai\`) once in the module that starts your app; the patch is process-wide and then covers every file
+\`\`\`
+
+What counts as metered:
+- **Python** — the patch is process-wide, so a call passes when any module that runs imports \`revenium_middleware.<provider>\`, directly or through the generated \`revenium_config.py\` when some module imports it. An import that only \`revenium_config.py\` has, with nothing importing \`revenium_config\`, never loads and does not count. A commented-out import does not count either. \`revenium_middleware.perplexity\` covers OpenAI-SDK calls made on a client whose constructor points at Perplexity (\`base_url="https://api.perplexity.ai"\`).
+- **Node, Anthropic and Google GenAI** — the call's own file imports the middleware.
+- **Node, OpenAI, Azure OpenAI, Perplexity and fal.ai** — the call is made on the wrapped client (\`openai.chat().completions().create(params, metadata)\`). A call on the SDK's own client (\`new OpenAI()\`, \`@fal-ai/client\`) is not metered and fails the check even when the middleware is imported in the same file. An endpoint the wrapped client does not offer (legacy \`completions.create\`, \`moderations.create\`, \`batches.create\`) cannot be metered at all; the check says so, and \`.reveniumrc\` \`ignore\` / \`skipProviders\` accepts it.
+
+The closing summary of \`revvy --non-interactive\` and of the wizard is built from the same check: it reports metering as active only when \`revvy check\` would pass, and calls excluded by \`.reveniumrc\` are not counted as metered.
+
+To fix: run \`revvy --non-interactive\` again, or manually add the middleware import (see examples below). For a call on a Node OpenAI client, follow the \`// TODO(revenium)\` comment revvy put above the client's construction.
 
 ---
 
@@ -788,7 +842,9 @@ def chat(message):
 from openai import OpenAI
 from flask import g                              # or however your app exposes
                                                  # the authenticated user
-import revenium_middleware.openai     # Add this line
+from dotenv import load_dotenv                   # Add these three lines: the
+load_dotenv()                                    # middleware reads the key when
+import revenium_middleware.openai                # imported, so load .env first
 
 client = OpenAI()
 
@@ -806,7 +862,7 @@ def chat(message):
     return response.choices[0].message.content
 \`\`\`
 
-The two changes are: (1) add the middleware import at the top, (2) add \`usage_metadata\` dict to each AI call.
+The two changes are: (1) load \`.env\` and add the middleware import, (2) add \`usage_metadata\` dict to each AI call. The patch is process-wide, so the import is needed once, in a module that runs before the first AI call; revvy adds it (with a \`try: load_dotenv()\` block ahead of it) to each file it instruments. Without loading \`.env\` first, a key that lives only in \`.env\` is not set when the middleware starts, and it logs "Metering is disabled".
 
 ### Node.js — Before
 \`\`\`typescript
@@ -845,7 +901,7 @@ async function summarize(text: string) {
 }
 \`\`\`
 
-Note: For Node.js OpenAI, Perplexity and fal.ai the pattern is a client wrapper (\`Initialize()\` + \`GetClient()\`) instead of monkey-patching, and Google GenAI / Vertex AI use a controller. Only Anthropic auto-patches on import. Revvy adds a TODO comment explaining the refactor needed.
+Note: For Node.js OpenAI, Perplexity and fal.ai the pattern is a client wrapper (\`Initialize()\` + \`GetClient()\`) instead of monkey-patching, Anthropic and Google GenAI on \`@google/genai\` (\`@revenium/middleware >= 2.1.0\`) are metered by their import alone, with \`usageMetadata\` passed inline on the call; the older \`@google/generative-ai\` SDK and \`@google-cloud/vertexai\` use a controller. For OpenAI and Perplexity revvy adds no import; it puts a \`// TODO(revenium)\` comment above each \`new OpenAI(...)\` / \`new AzureOpenAI(...)\` with the exact change. An OpenAI client moves to the \`openai\` client the generated helper exports (the helper calls \`Initialize()\` once), called with method chains (\`openai.chat().completions().create(params, metadata)\`, \`openai.embeddings().create(...)\`, \`openai.responses().create(...)\`) and the metadata as the second argument. A client pointed at Perplexity (its constructor mentions Perplexity) moves to \`GetClient()\` from \`@revenium/middleware/perplexity\`, after one \`Initialize()\` at startup; that client offers only \`chat().completions()\`. Until a call moves to the wrapped client it is not metered, and \`revvy check\` and the closing summary say so. Do not add \`Initialize()\` to each file: one call per middleware is enough, and every extra one starts another enforcement poller.
 
 ---
 
@@ -886,14 +942,17 @@ When running \`npx @revenium/revvy\` without \`--non-interactive\`, the wizard g
 | Provider | Import to add | Pattern |
 |----------|--------------|---------|
 | OpenAI | \`import { Initialize, GetClient } from "@revenium/middleware/openai"\` | Client wrapper — replace \`new OpenAI()\` with \`GetClient()\` |
-| Anthropic | \`import "@revenium/middleware/anthropic"\` | Auto-patches — add \`usageMetadata\` in \`.create()\` params |
-| Google GenAI | \`import { GoogleGenAIController } from "@revenium/middleware/google/genai"\` | Controller wrapper — \`new GoogleGenAIController().createChat(prompts, model, usageMetadata)\`; metadata is the third argument |
-| Vertex AI | \`import { VertexAIController } from "@revenium/middleware/google/vertex"\` | Same controller pattern — \`createChat(prompts, model, usageMetadata, projectId?, location?)\`; metadata stays third, before \`projectId\` / \`location\` |
+| Anthropic | \`import "@revenium/middleware/anthropic"\` | Auto-patches — add \`usageMetadata\` in \`.create()\` params. Under \`"moduleResolution": "NodeNext"\` the SDK's type augmentation does not apply as of \`2.1.0\` (TS2769 "'usageMetadata' does not exist"); it type-checks under \`bundler\` resolution, and on NodeNext the params need a cast until the SDK fixes it |
+| Google GenAI (\`@google/genai\`, incl. \`vertexai: true\`) | \`import "@revenium/middleware/google/genai"\` (\`>= 2.1.0\`) | Meters the app's own \`GoogleGenAI\` client on import — keep the calls and add \`usageMetadata\` to \`models.generateContent\` / \`generateContentStream\` / \`embedContent\` params, or once to \`chats.create\`. Load it before the first call and the same way as \`@google/genai\` (both \`import\` or both \`require\`) |
+| Google GenAI on the older \`@google/generative-ai\` | \`import { GoogleGenAIController } from "@revenium/middleware/google/genai"\` | Controller wrapper — \`new GoogleGenAIController().createChat(prompts, model, usageMetadata)\`; metadata is the third argument |
+| Vertex AI (\`@google-cloud/vertexai\`) | \`import { VertexAIController } from "@revenium/middleware/google/vertex"\` | Controller pattern — \`createChat(prompts, model, usageMetadata, projectId?, location?)\`; metadata stays third. Imagen and Veo calls (\`generateImages\`, \`generateVideos\`, …) are metered only through this controller |
 | Perplexity | \`import { Initialize, GetClient } from "@revenium/middleware/perplexity"\` | Client wrapper — same method-chain shape as OpenAI |
 | LiteLLM proxy | \`import { initialize } from "@revenium/middleware/litellm"\` | \`initialize()\` patches \`fetch\`; attribution travels as \`x-revenium-*\` headers on the proxy call |
 | fal.ai | \`import { Initialize, GetClient } from "@revenium/middleware/fal"\` | Client wrapper — metadata is the trailing argument of \`run\` / \`subscribe\` / \`stream\` |
 
-There is no bare \`@revenium/middleware/google\` subpath, and no \`@revenium/openai\` / \`@revenium/anthropic\` packages any more (both are deprecated on npm in favour of \`@revenium/middleware\`). Azure OpenAI is detected inside the OpenAI wrapper; Bedrock, Foundry and Vertex Claude are detected inside the Anthropic patch from the client \`baseURL\`. Since \`2.0.0\` the Node SDK loads \`.env.local\` and \`.env\` from the working directory itself.
+There is no bare \`@revenium/middleware/google\` subpath, and no \`@revenium/openai\` / \`@revenium/anthropic\` packages any more (both are deprecated on npm in favour of \`@revenium/middleware\`). Azure OpenAI is detected inside the OpenAI wrapper; Bedrock, Foundry and Vertex Claude are detected inside the Anthropic patch from the client \`baseURL\`. Since \`2.0.0\` the Node SDK loads \`.env.local\` and \`.env\` from the working directory itself. \`2.1.0\` meters Gemini, fal.ai and Anthropic Message Batches on its own — remove any \`trackGoogleUsageAsync\` call when upgrading, or Gemini usage is counted twice.
+
+**Provider attribution moved in \`revenium-python-sdk 0.14.0\`:** Claude called through Bedrock is recorded under Bedrock, and OpenAI-client calls pointed at OpenRouter under OpenRouter. A budget, alert or filter scoped to a provider shifts with it, so tell the developer when an upgrade crosses that version.
 
 **Detected but not auto-instrumented.** revvy's detection is deliberately wider than its transforms: it also flags **LangChain** (\`langchain\`, \`langchain-openai\`, \`langchain-anthropic\`, \`@langchain/*\`), **fal.ai** (\`fal-client\`, \`@fal-ai/client\`), **Vercel AI SDK**, **AWS Bedrock** and **Go** provider SDKs, none of which have an automatic transform. Those show up as \`Skipped [provider]: no transform\` — expected output, not a failure. Wire them by hand: Python and Node use the tables above.
 
@@ -907,7 +966,9 @@ There is no bare \`@revenium/middleware/google\` subpath, and no \`@revenium/ope
 
 The ingestion API accepts a broad set of fields, but **per-SDK + per-provider support varies**. Setting a field that the SDK doesn't expose per-call results in either silent drop (the field never reaches the wire) or process-wide env-var override (the same value applies to every concurrent call). Check the matrix below before assuming a field is settable in your stack.
 
-### Universally settable per-call (work everywhere)
+### Core fields
+
+The fields every onboarding deals with. **YOU set** rows are per-call metadata, and **Auto-captured** rows are filled by the SDK from the provider response, so application code never sets them. Where only some SDKs or providers carry a field, its Source column says which (\`agentVersion\` and the cache-TTL buckets, for example); the matrix below has the rest.
 
 | Field | Source | Description |
 |-------|--------|-------------|
@@ -926,31 +987,102 @@ The ingestion API accepts a broad set of fields, but **per-SDK + per-provider su
 | \`totalTokenCount\` | Auto-captured | Total tokens — REQUIRED by the ingestion API |
 | \`totalCost\` | Auto-captured | Estimated cost |
 | \`requestDuration\` | Auto-captured | Latency in ms |
+| \`cacheReadTokenCount\` | Auto-captured | Prompt-cache hits, integer, as the provider reports them |
+| \`cacheCreationTokenCount\` | Auto-captured | Prompt-cache writes, integer — the total across every TTL bucket below |
+| \`cacheCreation5mTokenCount\` / \`cacheCreation1hTokenCount\` | Auto-captured (Anthropic, Bedrock, LiteLLM) | Split of the cache writes by TTL, so 1-hour writes are priced at their own rate |
+| \`cacheCreation12hTokenCount\` | Auto-captured (Python, OpenAI Responses \`ttl_12h_tokens\`) | OpenAI's 12-hour cache writes. The three buckets must not add up to more than \`cacheCreationTokenCount\`: the call is still accepted, but every write is then priced at the 5-minute rate |
+| \`reasoningTokenCount\` | Auto-captured | Reasoning / thinking tokens, integer |
+| \`isStreamed\` | Auto-captured | Boolean — whether the response was streamed |
+| \`timeToFirstToken\` | Auto-captured | Milliseconds from \`requestTime\` to \`completionStartTime\` |
+| \`operationType\` | Auto-captured | \`CHAT\` \\| \`GENERATE\` \\| \`EMBED\` \\| \`CLASSIFY\` \\| \`SUMMARIZE\` \\| \`TRANSLATE\` \\| \`OTHER\` \\| \`TOOL_CALL\` \\| \`RERANK\` \\| \`SEARCH\` \\| \`MODERATION\` \\| \`VISION\` \\| \`TRANSFORM\` \\| \`GUARDRAIL\` \\| \`AUDIO\` \\| \`VIDEO\` \\| \`IMAGE\` |
+| \`costType\` | Auto-captured | Always \`AI\` on this endpoint (the default) |
+| \`middlewareSource\` | Auto-captured | Which middleware sent the call (max 255), set by the SDK itself — never by application code |
 
-> **\`organizationName\` and \`productName\` are normally auto-created** on first sight, which is why instrumentation "just works" against a fresh account. An account can opt into **strict ingestion mode** (\`PATCH ${REVENIUM_API_PATH_PREFIX}/tenants/{tenantId}/strict-ingestion-mode\`), and then it doesn't: a payload that *names* an organization, product, subscriber, credential or subscription that doesn't already exist is rejected with \`422\` and a structured code (\`CONSUMING_ORG_NOT_FOUND\`, \`PRODUCT_NOT_FOUND\`, \`SUBSCRIBER_NOT_FOUND\`, \`*_NAME_ID_MISMATCH\`, …), and the rejected transactions are listed at \`GET ${REVENIUM_API_PATH_PREFIX}/tenants/{tenantId}/ingestion-failures\` for 30 days. There is no replay: create the missing object (or fix the name) and send the transaction again. A reference the payload leaves out still falls through to the default behaviour.
+> **Token accounting differs by provider, and it is the easiest way to double-bill.** For OpenAI and Azure OpenAI (and Groq, xAI and Gemini), \`inputTokenCount\` is the provider's \`prompt_tokens\` **minus the cache writes**: cache reads stay inside it and are *also* reported in \`cacheReadTokenCount\`, while cache writes go only in \`cacheCreationTokenCount\`. For Anthropic and every other provider, \`inputTokenCount\` excludes both reads and writes. The SDKs already do this; it only matters on the direct metering call. A cache write on a model with no cache-write price is billed at the input rate. Send the provider as \`Bedrock\` rather than \`AWS\` or \`Amazon Bedrock\` — the variants are stored as sent and counted as Bedrock, but \`Bedrock\` is the canonical value.
+
+> **Pricing overrides — leave them null.** \`cacheCreationTokenCost\` / \`cacheReadTokenCost\` (USD) replace Revenium's own cache-token pricing, and \`costMultiplier\` scales the computed cost. Revenium prices every call itself, so a hard-coded value only makes the numbers wrong when the provider's prices move. Set \`costMultiplier\` only when the customer has a contracted rate *and* their SDK carries the field (see the matrix — Node never does).
+
+> **\`organizationName\` and \`productName\` are normally auto-created** on first sight, which is why instrumentation "just works" against a fresh account. An account can opt into **strict ingestion mode** (\`PATCH ${REVENIUM_API_PATH_PREFIX}/tenants/{tenantId}/strict-ingestion-mode\`), and then it doesn't: a payload that *names* an organization, product, subscriber, credential or subscription that doesn't already exist is dropped. **The metering call still answers \`201\`** — the check runs after ingestion, not at the HTTP edge — so a strict-mode rejection never shows up in the app's error handling. Rejected transactions are listed with a code at \`GET ${REVENIUM_API_PATH_PREFIX}/tenants/{tenantId}/ingestion-failures?errorCode=\` for 30 days: \`CONSUMING_ORG_NOT_FOUND\`, \`PRODUCT_NOT_FOUND\`, \`SUBSCRIBER_NOT_FOUND\`, \`CREDENTIAL_NOT_FOUND\` or \`SUBSCRIPTION_RELATIONSHIP_NOT_FOUND\`. On a strict-mode account, check that list after the first test calls rather than trusting the \`201\`. There is no replay: create the missing object (or fix the name) and send the transaction again **with a fresh \`Idempotency-Key\`** — the original key replays the cached \`201\` for 24 hours without ingesting anything, and a changed body under it is a \`409 idempotency_key_mismatch\`. A reference the payload leaves out still falls through to the default behaviour.
 
 ### Per-SDK + per-provider extras (verify against your installed SDK version)
 
-The fields below are accepted by the ingestion API but are NOT uniformly exposed across SDKs. Verified against \`@revenium/middleware@2.0.0\` (typed \`UsageMetadata\`), \`revenium-python-sdk@0.12.0\` and \`revenium-go-sdk@1.1.9\`. **Before promising any of these to a developer**, check the SDK version they have installed and the typed \`UsageMetadata\` interface that ships with it — a field the installed version doesn't know is silently dropped, and on the Node Anthropic path an unknown \`usageMetadata\` key can fail the provider call outright.
+The fields below are accepted by the ingestion API but are NOT uniformly exposed across SDKs. Verified against the published \`@revenium/middleware@2.1.0\` (typed \`UsageMetadata\` and its metadata builder), \`revenium-python-sdk@0.16.1\` (\`_core/fields.py\`) and \`revenium-go-sdk@1.1.9\` (\`core/metering\`). **Before promising any of these to a developer**, check the SDK version they have installed and the typed \`UsageMetadata\` interface that ships with it — a field the installed version doesn't know is silently dropped, and on the Node Anthropic path an unknown \`usageMetadata\` key can fail the provider call outright.
 
-Legend: ✅ per-call settable · ❌ not yet supported (the SDK drops the key before it reaches the wire)
+Legend: ✅ per-call settable · auto the SDK fills it · ❌ not supported (the SDK never sends it — reachable only through the direct metering call)
 
-| Field | Node (all providers) | Python (all providers) | Go (all providers) |
+| Field | Node | Python | Go |
 |---|:---:|:---:|:---:|
 | \`retryNumber\`, \`environment\`, \`region\`, \`parentTransactionId\`, \`transactionName\`, \`traceType\` / \`traceName\` | ✅ | ✅ | ✅ |
 | \`pricingTier\` (STANDARD / BATCH) | ❌ | ✅ | ✅ |
-| \`subscriptionTier\` | ❌ | ✅ | ✅ |
 | \`skillName\` and the five other \`skill*\` fields (see below) | ✅ (\`>= 1.2.0\`) | ✅ (\`>= 0.6.0\`) | ✅ |
 | \`agentVersion\` | ❌ | ✅ (\`>= 0.8.0\`) | ✅ |
-| \`subagentType\` | ❌ | ✅ (\`>= 0.9.0\`) | ✅ |
-| \`effort\`, \`clientSurface\`, \`entrypoint\` | ❌ | ✅ (\`0.7.0\` / \`0.10.0\` / \`0.11.0\`) | ✅ |
+| \`subagentType\` | ✅ chat + embed only | ✅ (\`>= 0.9.0\`) | ✅ |
+| \`squadId\` / \`squadName\` / \`squadRole\` | ❌ | ❌ | ✅ |
+| \`requestedServiceTier\` / \`actualServiceTier\` | ❌ | ✅ OpenAI, Google, fal | ✅ |
+| \`costMultiplier\` | ❌ | ✅ OpenAI, Google, fal | ✅ |
+| \`temperature\` | ✅ | ❌ | ✅ (auto on Google) |
+| \`systemFingerprint\` | ✅ | auto (LiteLLM client) | ✅ (auto on OpenAI-compatible) |
+| \`mediationLatency\` | ✅ | auto (LiteLLM proxy) | ✅ |
+| \`inferenceGeo\` | ❌ | ✅ | ❌ |
+| \`effort\`, \`promptId\`, \`promptLength\`, \`querySource\`, \`speed\` | ✅ chat + embed only | ✅ (\`effort >= 0.7.0\`) | ✅ |
+| \`clientSurface\` | ❌ | ✅ (\`>= 0.10.0\`) | ✅ |
+| \`entrypoint\`, \`ccrSessionId\` | ❌ | ✅ (\`entrypoint >= 0.11.0\`) | ❌ |
+| \`codingAssistantAccountUuid\` | ❌ | ✅ OpenAI only | ✅ |
+| \`subscriptionTier\` | ❌ | ✅ OpenAI, Google, fal | ✅ |
+| \`modelHost\` | ❌ | auto (LiteLLM proxy) | ❌ |
+| \`subscriberEmailSource\` | ❌ | ❌ | ❌ |
+| \`errorCode\` | ❌ | auto (failed calls) | auto (failed calls) |
+| \`errorReason\` | ✅ (auto on Google) | auto (failed calls) | ✅ (also auto) |
+| \`billingSkipped\` | ❌ | ❌ | ✅ |
+| \`skipReason\` | ❌ | ❌ | ❌ |
+| \`cacheCreationTokenCost\` / \`cacheReadTokenCost\` | ❌ | ❌ | ✅ |
 
-On Node, an \`agentVersion\` or \`subagentType\` is reachable today only through the direct metering call above; the Go SDK forwards both. \`errorCode\`, \`billingSkipped\` and \`skipReason\` are written by the SDKs themselves when a provider call fails — they are not user metadata in any SDK, so do not teach them.
+"Chat + embed only" means the Node SDK writes the field on chat and embedding records but not on image, audio or video ones. Python and Go write the coding-assistant and prompt-context fields on completions only.
 
-**How to use this table when advising a developer:**
+**How to use this table when advising a developer.** The matrix says what an SDK *can carry*, not what application code *should set*:
 
-1. If the field is ✅ in their SDK, recommend it directly.
-2. If the field is ❌, don't promise it. The API accepts it; that SDK doesn't expose it.
+1. **✅ — the SDK forwards it, so it is available.** Recommend it where it fits the app (\`environment\`, \`subagentType\`, \`traceType\`, the \`skill*\` fields …), **except** for three groups that are ✅ in some SDKs only so a caller that genuinely holds the value can pass it on; an ordinary app leaves these alone, and each has its own section below: the failed-call fields (\`errorCode\`, \`errorReason\`, \`billingSkipped\`, \`skipReason\`), the pricing overrides (cache costs, \`costMultiplier\`), and the coding-assistant client fields.
+2. **auto — the SDK fills it.** Nothing to do; setting it as well double-reports or overrides the SDK's value.
+3. **❌ — don't promise it.** The API accepts it, that SDK never sends it; it is reachable only through the direct metering call.
+4. **A qualified cell applies only on the paths it names.** "✅ chat + embed only" or "✅ OpenAI only" is ✅ there; "auto (failed calls)" or "auto (LiteLLM proxy)" is auto there. On every other path, treat the field as ❌.
+
+### Failed and no-charge calls
+
+| Field | Type | Meaning |
+|---|---|---|
+| \`errorCode\` | integer | The provider's HTTP status on a failed call |
+| \`errorReason\` | string | Why the provider call failed |
+| \`billingSkipped\` | boolean | \`true\` records the call at $0 cost |
+| \`skipReason\` | \`FREE_TIER\` \\| \`RATE_LIMITED\` \\| \`QUOTA_EXCEEDED\` \\| \`CONTENT_POLICY_VIOLATION\` \\| \`CAPACITY_UNAVAILABLE\` \\| \`SERVICE_UNAVAILABLE\` | Why no charge applies |
+
+**On the SDK path, leave all four alone.** Python and Go write \`errorCode\` and \`errorReason\` themselves on a failed provider call, so setting them as well double-reports the failure. The Node SDK fills \`errorReason\` only on Google and never sends \`errorCode\`: a failed OpenAI or Anthropic call from Node reaches Revenium without either, and is visible only through the app's own error handling — don't paper over that by setting them on successful calls. Setting \`billingSkipped\` on a billable call, from any SDK, zeroes real spend. **On the direct metering call** (no SDK, or a provider no SDK wraps), they are how a failed or free call is recorded: send \`errorCode\` + \`errorReason\` with \`stopReason: "ERROR"\` for a provider failure, and \`billingSkipped: true\` with a \`skipReason\` for a call that genuinely cost nothing (a free-tier quota, a rate-limited request the provider did not bill).
+
+### Coding-assistant client fields
+
+These describe a coding-assistant **client** — Claude Code, Codex, Cursor, Copilot — and are reported by that client about itself. A web app, worker or API never sets them; do not invent values. They matter only when the project being onboarded *is* such a client, or forwards one's telemetry.
+
+| Field | Constraint | Meaning |
+|---|---|---|
+| \`clientSurface\` | max 64, \`[A-Za-z0-9._-]\` | Which client surface made the call, as the client names it |
+| \`entrypoint\` | max 64, \`[A-Za-z0-9._-]\` | How the client was launched — Claude Code sends \`cli\`, \`sdk-cli\`, \`sdk-ts\`, \`sdk-py\`, \`claude-vscode\`, \`claude-in-slack\` |
+| \`ccrSessionId\` | max 128, \`[A-Za-z0-9_-]\` | Claude Code cloud session id (starts \`cse_\`) |
+| \`querySource\` | max 128, \`[A-Za-z0-9._:-]\` | Which part of the client issued the query |
+| \`promptId\` | max 64, \`[A-Za-z0-9_-]\` | Id of the user prompt the call served |
+| \`promptLength\` | integer >= 0 | Length of that prompt |
+| \`speed\` | max 16, \`[A-Za-z0-9_-]\`; \`fast\` \\| \`normal\` | The client's speed mode |
+| \`effort\` | max 16, \`[A-Za-z0-9_-]\` | Reasoning effort the client requested |
+| \`codingAssistantAccountUuid\` | string | The client's account id |
+| \`subscriptionTier\` | string, e.g. \`pro\`, \`free\`, \`unknown\` | The client account's plan |
+| \`subscriberEmailSource\` | max 20 | Provenance of the subscriber email (where the client read it) |
+| \`modelHost\` | max 50; \`bedrock\` \\| \`foundry\` \\| \`vertex\` \\| \`anthropic\` | Where the model was served when the client routes through a cloud |
+
+A value outside the character set or over the cap is rejected with \`400\`, not truncated.
+
+### Pricing geography (\`inferenceGeo\`)
+
+\`inferenceGeo\` (max 16, \`[A-Za-z0-9_-]\`) changes what a call costs: \`"us"\` means the provider ran it under US-only inference, which carries a residency surcharge. Only the Python SDK forwards it, and it drops the field from Claude records Anthropic does not bill that way; elsewhere, send it on the direct metering call only when the provider response says the call ran with that geography. Never set it from a config default.
+
+### Matrix versions
 
 This matrix shifts as SDK releases land — between \`@revenium/middleware@1.1.10\` / \`revenium-python-sdk@0.6.0\` and the versions above, the Node Anthropic path gained per-call metadata and Node gained the \`skill*\` fields. If the developer is on a newer version than the ones named above, re-check the typed interface rather than trusting this table.
 
@@ -1021,11 +1153,13 @@ npx @revenium/revvy check
 | Check shows wrapped but metering not appearing | SDK not installed or API key not set | Install revenium-python-sdk/\`@revenium/middleware\` and set REVENIUM_METERING_API_KEY |
 | Anthropic returns \`400: "usageMetadata: Extra inputs are not permitted"\` | App was launched under \`tsx\` — middleware silently failed to patch | Run via the production entry point (Vite/Next.js dev server, compiled \`tsc\`+\`node\`, or \`vitest\`). \`tsx\` is not supported. |
 | 403 on outcome POST | Using metering key (\`rev_mk_*\`) instead of write key | Outcome API requires a \`rev_sk_*\` write key: Python reads \`REVENIUM_WRITE_API_KEY\`; Node reads the same variable, so only the process that reports outcomes runs on the write key (\`REVENIUM_METERING_API_KEY=rev_sk_...\`) and the rest keep \`rev_mk_*\`; Go passes it to \`jobs.NewJobClient\` |
+| 403 on outcome POST with a \`rev_sk_*\` key | The key's owner is only a Member or Department Admin | Create the write key as an account, tenant or organization admin; \`/users/me\` succeeding does not prove the key can report outcomes |
+| 429 with \`{"error":"rate_limited"}\` and no \`X-RateLimit-*\` headers | Edge limit: over 300 management-API calls per key in 60 seconds | Wait 60 seconds and pace the script below 5 requests per second per key |
+| Metering returns 201 but nothing appears | Strict ingestion mode dropped the record after ingestion | Check \`GET ${REVENIUM_API_PATH_PREFIX}/tenants/{tenantId}/ingestion-failures\`, create the missing organization, product or subscriber, and resend with a fresh \`Idempotency-Key\` (the original one replays the cached \`201\`) |
 | \`400 Invalid JSON format\` on outcome POST | Missing required \`executionStatus\` field | Add \`executionStatus: "SUCCESS" \\| "FAILED" \\| "CANCELLED"\` to the body |
 | \`outcomeValue\` not appearing in dashboard | Used \`monetaryValue\` instead | Field is \`outcomeValue\`. \`monetaryValue\` returns 200 and records \`outcomeValue: null\`. Correct it in place: \`PATCH .../jobs/{agenticJobId}/outcome\` with the right \`outcomeValue\` plus a \`reason\`. Keep the same \`agenticJobId\`. |
 | \`404\` on outcome POST | Job not yet ingested (async metering pipeline) | Retry with exponential backoff honouring \`Retry-After\` (the Python SDK does it itself, up to 10 attempts, 2s → 90s; Node and Go do not retry a 404 — back off yourself). Never in a tight loop — repeated 404s trip the error-pattern limiter. |
 | \`429\` on any call | Bucket budget exhausted, or the error-pattern limiter fired | Wait \`Retry-After\` seconds, then back off with jitter. Check \`X-RateLimit-Limited-Reason\`: \`bucket-rate\` means slow down, \`error-pattern\` means fix the request shape. |
-| Metering returns \`422\` with a code like \`CONSUMING_ORG_NOT_FOUND\` | The account has **strict ingestion mode** on | The payload names an organization/product/subscriber that doesn't exist yet. Check \`GET .../tenants/{tenantId}/ingestion-failures\`, create the missing object (or fix the name), and send the transaction again — rejected records are listed for 30 days and are not replayed. |
 | \`409\` on outcome POST | An outcome is already reported for this Job | Not a dead end. If the first report was right, treat as success (the Node SDK throws \`OutcomeAlreadyReportedError\` here from \`1.2.0\`). If it was wrong, \`PATCH .../jobs/{agenticJobId}/outcome\` with a \`reason\`; \`GET .../outcome/history\` shows what was recorded. |
 | \`422\` on outcome PATCH | No outcome reported yet (or, for a dashboard session, a blank \`reason\`) | POST the outcome first — PATCH only amends an existing one. API-key callers may omit \`reason\`, but a real one is the only useful audit entry. |
 | \`409\` on outcome PATCH | \`expectedEntityVersion\` is stale — someone amended the outcome after you read it | Refetch the Job, re-check the outcome history, then re-apply with the new \`entityVersion\`. Never retry blindly: an amendment is not idempotent. |
@@ -1037,9 +1171,10 @@ npx @revenium/revvy check
 
 | Command | Code | Meaning |
 |---------|------|---------|
-| \`revvy --non-interactive\` | 0 | At least one AI call site was found. **Read the closing summary** — \`0\` also covers the case where call sites were found but revvy has no transform for the language, so nothing was wired and metering is NOT active yet. |
-| \`revvy --non-interactive\` | 1 | Nothing was set up: auth failure, missing API key, no project found, or no AI SDK calls detected |
+| \`revvy --non-interactive\` | 0 | At least one AI call site was found. **Read the closing summary** — \`0\` also covers runs where metering is NOT active yet for some or all calls: call sites in a language revvy has no transform for, or Node OpenAI / Perplexity calls still on the SDK's own client. The summary lists those calls; \`revvy check\` gives the fix for each. |
+| \`revvy --non-interactive\` | 1 | Nothing was set up and no files were written: auth failure, missing API key, invalid \`--base-url\`, no project found, or no AI SDK calls detected |
 | \`revvy --non-interactive --dry-run\` | 0 | Preview complete, nothing written |
+| \`revvy --non-interactive --dry-run\` | 1 | No AI SDK calls detected — a real run would set nothing up |
 | \`revvy check\` | 0 | All AI calls are properly wrapped |
 | \`revvy check\` | 1 | Unwrapped calls or missing middleware detected |
 | \`revvy check --warn-only\` | 0 | Always 0 — findings (if any) are printed but do not fail CI |
@@ -1052,9 +1187,9 @@ npx @revenium/revvy check
    - Python: \`pip install "revenium-python-sdk[openai,anthropic]" python-dotenv\`
    - Node: \`npm install @revenium/middleware dotenv\`
 
-2. **Set the API key** in \`.env\` or environment: \`REVENIUM_METERING_API_KEY=<your-key>\` — get it at ${REVENIUM_DASHBOARD_URL}${DASHBOARD_PATHS.SDK_SETUP}. The Node (\`>= 2.0.0\`) and Go (\`>= 1.1.9\`) SDKs read \`.env.local\` and \`.env\` from the working directory themselves; Python needs \`python-dotenv\` (or an exported variable).
+2. **Set the API key** in \`.env\` or environment: \`REVENIUM_METERING_API_KEY=<your-key>\` — get it at ${REVENIUM_DASHBOARD_URL}${DASHBOARD_PATHS.SDK_SETUP}. The Node (\`>= 2.0.0\`) and Go (\`>= 1.1.9\`) SDKs read \`.env.local\` and \`.env\` from the working directory themselves; for Python, revvy loads \`.env\` with \`python-dotenv\` (in the install line) ahead of the middleware import in each file it instruments, and without \`python-dotenv\` the variable has to be exported.
 
-3. **Run the app** — metering flows automatically
+3. **Run the app** — every call \`revvy check\` reports as wrapped is metered; Node OpenAI and Perplexity calls start once they move to the wrapped client (follow the \`// TODO(revenium)\` comments)
 
 4. **Wire TODO comments** — replace \`// TODO: wire to ...\` placeholders with the actual customer ID expression from your auth context
 

@@ -17,6 +17,8 @@ export interface CallPattern {
   operationType: OperationType;
   /** Human-readable label for reports. Defaults to methodChain. */
   method?: string;
+  /** For a `wrapped-client` provider: the Revenium wrapped client has no equivalent of this call. */
+  noWrappedEquivalent?: true;
 }
 
 export interface ProviderPattern {
@@ -34,6 +36,12 @@ export interface ProviderPattern {
   instrumentationImports: string[];
   /** Module to install when this provider is not instrumented, if it differs from instrumentationImports[0]. */
   installModule?: string;
+  /**
+   * `wrapped-client`: the middleware meters only calls made on the client its
+   * GetClient() returns, never the SDK's own client, so importing it is not
+   * enough. Absent: importing the middleware meters the SDK.
+   */
+  meteredVia?: "wrapped-client";
 }
 
 export const NODE_PATTERNS: ProviderPattern[] = [
@@ -52,9 +60,20 @@ export const NODE_PATTERNS: ProviderPattern[] = [
       { methodChain: "chat.completions.parse", operationType: "chat" },
       // Revenium-wrapped form: client.chat().completions().create(params, metadata)
       { methodChain: "chat().completions().create", operationType: "chat" },
-      { methodChain: "chat().completions().stream", operationType: "chat" },
+      { methodChain: "chat().completions().createStreaming", operationType: "chat" },
+      { methodChain: "chat().completions().parse", operationType: "chat" },
+      { methodChain: "embeddings().create", operationType: "embed" },
+      { methodChain: "responses().create", operationType: "response" },
+      { methodChain: "responses().createStreaming", operationType: "response" },
+      { methodChain: "responses().parse", operationType: "response" },
+      { methodChain: "images().generate", operationType: "image" },
+      { methodChain: "images().edit", operationType: "image" },
+      { methodChain: "images().createVariation", operationType: "image" },
+      { methodChain: "audio().speech.create", operationType: "audio" },
+      { methodChain: "audio().transcriptions.create", operationType: "audio" },
+      { methodChain: "audio().translations.create", operationType: "audio" },
       // Legacy completions
-      { methodChain: "completions.create", operationType: "completion" },
+      { methodChain: "completions.create", operationType: "completion", noWrappedEquivalent: true },
       // Embeddings
       { methodChain: "embeddings.create", operationType: "embed" },
       // Images
@@ -62,7 +81,7 @@ export const NODE_PATTERNS: ProviderPattern[] = [
       { methodChain: "images.edit", operationType: "image" },
       { methodChain: "images.createVariation", operationType: "image" },
       // Moderation
-      { methodChain: "moderations.create", operationType: "other" },
+      { methodChain: "moderations.create", operationType: "other", noWrappedEquivalent: true },
       // Responses API (gpt-4o reasoning models, agents) — both modes
       { methodChain: "responses.create", operationType: "response" },
       { methodChain: "responses.stream", operationType: "response" },
@@ -71,12 +90,13 @@ export const NODE_PATTERNS: ProviderPattern[] = [
       { methodChain: "audio.transcriptions.create", operationType: "audio" },
       { methodChain: "audio.translations.create", operationType: "audio" },
       // Batch API (offline jobs — billed at half cost; meaningful to track)
-      { methodChain: "batches.create", operationType: "other", method: "batches.create (offline batch)" },
+      { methodChain: "batches.create", operationType: "other", method: "batches.create (offline batch)", noWrappedEquivalent: true },
     ],
     instrumentationImports: [
       "@revenium/middleware/openai",
       "@revenium/openai", // legacy alias
     ],
+    meteredVia: "wrapped-client",
   },
   {
     provider: "anthropic",
@@ -166,6 +186,7 @@ export const NODE_PATTERNS: ProviderPattern[] = [
     instrumentationImports: [
       "@revenium/middleware/perplexity",
     ],
+    meteredVia: "wrapped-client",
   },
   {
     provider: "azure-openai",
@@ -175,11 +196,12 @@ export const NODE_PATTERNS: ProviderPattern[] = [
     callPatterns: [
       { methodChain: "chat.completions.create", operationType: "chat" },
       { methodChain: "chat.completions.stream", operationType: "chat" },
-      { methodChain: "completions.create", operationType: "completion" },
+      { methodChain: "completions.create", operationType: "completion", noWrappedEquivalent: true },
       { methodChain: "embeddings.create", operationType: "embed" },
       { methodChain: "images.generate", operationType: "image" },
     ],
     instrumentationImports: [],
+    meteredVia: "wrapped-client",
   },
   {
     provider: "vercel-ai",
@@ -229,6 +251,7 @@ export const NODE_PATTERNS: ProviderPattern[] = [
       { methodChain: "stream", operationType: "image" },
     ],
     instrumentationImports: ["@revenium/middleware/fal"],
+    meteredVia: "wrapped-client",
   },
   {
     provider: "litellm",

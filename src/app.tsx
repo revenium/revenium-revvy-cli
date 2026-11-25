@@ -15,11 +15,12 @@ import { Complete } from "./phases/complete/Complete.js";
 
 interface AppProps {
   apiKey?: string;
+  baseUrl?: string;
   targetDir: string;
   debug: boolean;
 }
 
-export function App({ apiKey, targetDir, debug }: AppProps) {
+export function App({ apiKey, baseUrl, targetDir, debug }: AppProps) {
   const revvy = useRevvyState(apiKey, targetDir, debug);
   const { state } = revvy;
 
@@ -49,6 +50,7 @@ export function App({ apiKey, targetDir, debug }: AppProps) {
         {state.phase === Phase.HealthCheck && (
           <HealthCheck
             apiKey={state.apiKey}
+            baseUrl={baseUrl}
             targetDir={state.targetDir}
             onSetApiKey={revvy.setApiKey}
             onComplete={revvy.completeHealthCheck}
@@ -63,6 +65,7 @@ export function App({ apiKey, targetDir, debug }: AppProps) {
         {state.phase === Phase.BillingProviders && (
           <BillingProviders
             apiKey={state.apiKey!}
+            baseUrl={baseUrl}
             teamId={state.teamId!}
             onComplete={revvy.completeBillingProviders}
             onBack={revvy.goBack}
@@ -72,6 +75,7 @@ export function App({ apiKey, targetDir, debug }: AppProps) {
           <Scan
             targetDir={state.targetDir}
             onComplete={revvy.completeScan}
+            onNothingToSetUp={state.setupMode === "both" ? () => revvy.goToPhase(Phase.Complete) : undefined}
           />
         )}
         {state.phase === Phase.Consultation && (
@@ -95,6 +99,8 @@ export function App({ apiKey, targetDir, debug }: AppProps) {
             scanResult={state.scanResult!}
             meteringDesign={state.meteringDesign!}
             apiKey={state.apiKey}
+            baseUrl={baseUrl}
+            keyVerified={state.healthCheck?.keyVerified !== false}
             onComplete={(result, installCmd) =>
               revvy.completeInstrumentation({
                 filesModified: result.filesModified,
@@ -120,6 +126,7 @@ export function App({ apiKey, targetDir, debug }: AppProps) {
             generatedFiles={state.generatedFiles}
             meteringDesign={state.meteringDesign}
             billingProvidersResult={state.billingProvidersResult}
+            keyUnverified={state.healthCheck?.keyUnverified === true}
             onBackToMenu={revvy.backToMenu}
           />
         )}

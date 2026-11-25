@@ -33,6 +33,14 @@ export interface CallSite {
    * surface "function X dominates the AI calls in file Y".
    */
   enclosingFunction?: string;
+  /**
+   * Set for providers whose Node middleware is a client wrapper (OpenAI, Azure
+   * OpenAI, Perplexity, fal.ai): whether the call is made on the Revenium
+   * wrapped client, or on the provider SDK's own client, which that middleware
+   * does not meter even when it is imported. `no-wrapped-equivalent`: an SDK
+   * call the wrapped client cannot make, so Revenium cannot meter it at all.
+   */
+  client?: "revenium-wrapped" | "provider-sdk" | "no-wrapped-equivalent";
 }
 
 export interface ExistingInstrumentation {
